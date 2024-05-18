@@ -13,6 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cassert>
+#include <cstdint>
 #include <deque>
 #include <map>
 #include <memory>
@@ -427,6 +429,14 @@ void ContextBase::onHttpCallResponse(uint32_t token, uint32_t headers, uint32_t 
   wasm_->on_http_call_response_(this, id_, token, headers, body_size, trailers);
 }
 
+void ContextBase::onRedisCallResponse(uint32_t token, uint32_t status, uint32_t response_size) {
+  if (isFailed() || !wasm_->on_redis_call_response_) {
+    return;
+  }
+  DeferAfterCallActions actions(this);
+  wasm_->on_redis_call_response_(this, id_, token, status, response_size);
+}
+
 void ContextBase::onQueueReady(uint32_t token) {
   if (!isFailed() && wasm_->on_queue_ready_) {
     DeferAfterCallActions actions(this);
@@ -535,7 +545,7 @@ FilterMetadataStatus ContextBase::convertVmCallResultToFilterMetadataStatus(uint
 
 ContextBase::~ContextBase() {
   // Do not remove vm context which has the same lifetime as wasm_.
-  if (id_ != 0U) {
+  if (id_ != 0U && wasm_ != nullptr) {
     wasm_->contexts_.erase(id_);
   }
 }

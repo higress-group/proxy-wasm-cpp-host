@@ -70,9 +70,9 @@ using WasmCallWord = std::function<WasmCallInFuncType<N, Word, ContextBase *, Wo
 
 #define FOR_ALL_WASM_VM_EXPORTS(_f)                                                                \
   _f(proxy_wasm::WasmCallVoid<0>) _f(proxy_wasm::WasmCallVoid<1>) _f(proxy_wasm::WasmCallVoid<2>)  \
-      _f(proxy_wasm::WasmCallVoid<3>) _f(proxy_wasm::WasmCallVoid<5>)                              \
-          _f(proxy_wasm::WasmCallWord<1>) _f(proxy_wasm::WasmCallWord<2>)                          \
-              _f(proxy_wasm::WasmCallWord<3>)
+      _f(proxy_wasm::WasmCallVoid<3>) _f(proxy_wasm::WasmCallVoid<4>)                              \
+          _f(proxy_wasm::WasmCallVoid<5>) _f(proxy_wasm::WasmCallWord<1>)                          \
+              _f(proxy_wasm::WasmCallWord<2>) _f(proxy_wasm::WasmCallWord<3>)
 
 // These are templates and its helper for constructing signatures of functions callbacks from Wasm
 // VMs.
@@ -139,7 +139,13 @@ enum class Cloneable {
   InstantiatedModule // VMs can be cloned from an instantiated module.
 };
 
-enum class AbiVersion { ProxyWasm_0_1_0, ProxyWasm_0_2_0, ProxyWasm_0_2_1, ProxyWasm_0_2_100, Unknown };
+enum class AbiVersion {
+  ProxyWasm_0_1_0,
+  ProxyWasm_0_2_0,
+  ProxyWasm_0_2_1,
+  ProxyWasm_0_2_100,
+  Unknown
+};
 
 class NullPlugin;
 
@@ -174,6 +180,7 @@ enum class FailState : int {
   StartFailed = 5,
   ConfigureFailed = 6,
   RuntimeError = 7,
+  RecoverError = 8,
 };
 
 // Wasm VM instance. Provides the low level WASM interface.

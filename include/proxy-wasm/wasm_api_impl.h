@@ -211,6 +211,23 @@ inline WasmResult proxy_http_call(const char *uri_ptr, size_t uri_size, void *he
                                              WR(trailer_pairs_ptr), WS(trailer_pairs_size),
                                              WS(timeout_milliseconds), WR(token_ptr)));
 }
+
+// Redis
+// Returns token, used in callback onRedisCallResponse
+inline WasmResult proxy_redis_call(const char *service_ptr, size_t service_size,
+                                   const char *query_ptr, size_t query_size, uint32_t *token_ptr) {
+  return wordToWasmResult(exports::redis_call(WR(service_ptr), WS(service_size), WR(query_ptr),
+                                              WS(query_size), WR(token_ptr)));
+}
+inline WasmResult proxy_redis_init(const char *service_ptr, size_t service_size,
+                                   const char *username_ptr, size_t username_size,
+                                   const char *password_ptr, size_t password_size,
+                                   uint32_t timeout_milliseconds) {
+  return wordToWasmResult(exports::redis_init(WR(service_ptr), WS(service_size), WR(username_ptr),
+                                              WS(username_size), WR(password_ptr),
+                                              WS(password_size), WS(timeout_milliseconds)));
+}
+
 // gRPC
 // Returns token, used in gRPC callbacks (onGrpc...)
 inline WasmResult proxy_grpc_call(const char *service_ptr, size_t service_size,

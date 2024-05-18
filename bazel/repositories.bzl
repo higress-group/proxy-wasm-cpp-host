@@ -101,10 +101,11 @@ def proxy_wasm_cpp_host_repositories():
     )
 
     maybe(
-        git_repository,
+        http_archive,
         name = "proxy_wasm_cpp_sdk",
-        commit = "0a2b9e1928878e1662ad671be4ee9a8d0853243a",
-        remote = "git@gitlab.alibaba-inc.com:Ingress/proxy-wasm-cpp-sdk.git",
+        sha256 = "89792fc1abca331f29f99870476a04146de5e82ff903bdffca90e6729c1f2470",
+        strip_prefix = "proxy-wasm-cpp-sdk-95bb82ce45c41d9100fd1ec15d2ffc67f7f3ceee",
+        urls = ["https://github.com/proxy-wasm/proxy-wasm-cpp-sdk/archive/95bb82ce45c41d9100fd1ec15d2ffc67f7f3ceee.tar.gz"],
     )
 
     # Test dependencies.

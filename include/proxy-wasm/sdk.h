@@ -44,6 +44,7 @@ using FilterMetadataStatus = internal::FilterMetadataStatus;
 using FilterTrailersStatus = internal::FilterTrailersStatus;
 using FilterDataStatus = internal::FilterDataStatus;
 using GrpcStatus = internal::GrpcStatus;
+using RedisStatus = internal::RedisStatus;
 using MetricType = internal::MetricType;
 using CloseType = internal::CloseType;
 

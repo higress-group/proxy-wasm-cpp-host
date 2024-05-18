@@ -21,6 +21,13 @@ def proxy_wasm_cpp_host_repositories():
 
     maybe(
         http_archive,
+        name = "bazel_compdb",
+        strip_prefix = "bazel-compilation-database-0.5.2",
+        url = "https://github.com/grailbio/bazel-compilation-database/archive/0.5.2.tar.gz",
+    )
+
+    maybe(
+        http_archive,
         name = "bazel_skylib",
         urls = [
             "https://mirror.bazel.build/github.com/bazelbuild/bazel-skylib/releases/download/1.1.1/bazel-skylib-1.1.1.tar.gz",
@@ -94,11 +101,10 @@ def proxy_wasm_cpp_host_repositories():
     )
 
     maybe(
-        http_archive,
+        git_repository,
         name = "proxy_wasm_cpp_sdk",
-        sha256 = "89792fc1abca331f29f99870476a04146de5e82ff903bdffca90e6729c1f2470",
-        strip_prefix = "proxy-wasm-cpp-sdk-95bb82ce45c41d9100fd1ec15d2ffc67f7f3ceee",
-        urls = ["https://github.com/proxy-wasm/proxy-wasm-cpp-sdk/archive/95bb82ce45c41d9100fd1ec15d2ffc67f7f3ceee.tar.gz"],
+        commit = "0a2b9e1928878e1662ad671be4ee9a8d0853243a",
+        remote = "git@gitlab.alibaba-inc.com:Ingress/proxy-wasm-cpp-sdk.git",
     )
 
     # Test dependencies.

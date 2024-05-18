@@ -104,6 +104,10 @@ Word get_response_body_buffer_bytes(Word start, Word length, Word ptr_ptr, Word 
 Word http_call(Word uri_ptr, Word uri_size, Word header_pairs_ptr, Word header_pairs_size,
                Word body_ptr, Word body_size, Word trailer_pairs_ptr, Word trailer_pairs_size,
                Word timeout_milliseconds, Word token_ptr);
+Word redis_init(Word service_ptr, Word service_size, Word username_ptr, Word username_size,
+                Word passowrd_ptr, Word password_size, Word timeout_milliseconds);
+Word redis_call(Word service_ptr, Word service_size, Word query_ptr, Word query_size,
+                Word token_ptr);
 Word define_metric(Word metric_type, Word name_ptr, Word name_size, Word metric_id_ptr);
 Word increment_metric(Word metric_id, int64_t offset);
 Word record_metric(Word metric_id, uint64_t value);
@@ -163,7 +167,8 @@ void emscripten_notify_memory_growth(Word);
                                   _f(get_current_time_nanoseconds) _f(define_metric)               \
                                       _f(increment_metric) _f(record_metric) _f(get_metric)        \
                                           _f(set_effective_context) _f(done)                       \
-                                              _f(call_foreign_function)
+                                              _f(call_foreign_function) _f(redis_init)             \
+                                                  _f(redis_call)
 
 #define FOR_ALL_HOST_FUNCTIONS_ABI_SPECIFIC(_f)                                                    \
   _f(get_configuration) _f(continue_request) _f(continue_response) _f(clear_route_cache)           \

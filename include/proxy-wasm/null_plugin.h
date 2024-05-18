@@ -92,6 +92,8 @@ public:
   void onHttpCallResponse(uint64_t context_id, uint64_t token, uint64_t headers, uint64_t body_size,
                           uint64_t trailers);
 
+  void onRedisCallResponse(uint64_t context_id, uint64_t token, uint64_t status, uint64_t response);
+
   void onGrpcReceive(uint64_t context_id, uint64_t token, size_t body_size);
   void onGrpcClose(uint64_t context_id, uint64_t token, uint64_t status_code);
   void onGrpcReceiveInitialMetadata(uint64_t context_id, uint64_t token, uint64_t headers);

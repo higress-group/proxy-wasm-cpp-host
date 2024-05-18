@@ -117,6 +117,132 @@ TEST_P(TestVm, GetOrCreateThreadLocalWasmFailCallbacks) {
   ASSERT_NE(thread_local_plugin3->wasm(), thread_local_plugin2->wasm());
 }
 
+// Recover  only used for WasmVMs - not available for NullVM.
+TEST_P(TestVm, RecoverCrashedThreadLocalWasm) {
+  const auto *const plugin_name = "plugin_name";
+  const auto *const root_id = "root_id";
+  const auto *const vm_id = "vm_id";
+  const auto *const vm_config = "vm_config";
+  const auto *const plugin_config = "plugin_config";
+  const auto fail_open = false;
+
+  // Create a plugin.
+  const auto plugin = std::make_shared<PluginBase>(plugin_name, root_id, vm_id, engine_,
+                                                   plugin_config, fail_open, "plugin_key");
+
+  // Define callbacks.
+  WasmHandleFactory wasm_handle_factory =
+      [this, vm_id, vm_config](std::string_view vm_key) -> std::shared_ptr<WasmHandleBase> {
+    auto base_wasm = std::make_shared<WasmBase>(makeVm(engine_), vm_id, vm_config, vm_key,
+                                                std::unordered_map<std::string, std::string>{},
+                                                AllowedCapabilitiesMap{});
+    return std::make_shared<WasmHandleBase>(base_wasm);
+  };
+
+  WasmHandleCloneFactory wasm_handle_clone_factory =
+      [this](const std::shared_ptr<WasmHandleBase> &base_wasm_handle)
+      -> std::shared_ptr<WasmHandleBase> {
+    auto wasm = std::make_shared<WasmBase>(
+        base_wasm_handle, [this]() -> std::unique_ptr<WasmVm> { return makeVm(engine_); });
+    return std::make_shared<WasmHandleBase>(wasm);
+  };
+
+  PluginHandleFactory plugin_handle_factory =
+      [](const std::shared_ptr<WasmHandleBase> &base_wasm,
+         const std::shared_ptr<PluginBase> &plugin) -> std::shared_ptr<PluginHandleBase> {
+    return std::make_shared<PluginHandleBase>(base_wasm, plugin);
+  };
+
+  // Read the minimal loadable binary.
+  auto source = readTestWasmFile("abi_export.wasm");
+
+  // Create base Wasm via createWasm.
+  auto base_wasm_handle =
+      createWasm("vm_key", source, plugin, wasm_handle_factory, wasm_handle_clone_factory, false);
+  ASSERT_TRUE(base_wasm_handle && base_wasm_handle->wasm());
+
+  // Create a thread local plugin.
+  auto plugin_handle = getOrCreateThreadLocalPlugin(
+      base_wasm_handle, plugin, wasm_handle_clone_factory, plugin_handle_factory);
+  // Cause runtime crash.
+  plugin_handle->wasm()->wasm_vm()->fail(FailState::RuntimeError, "runtime error msg");
+  ASSERT_TRUE(plugin_handle->wasm()->isFailed());
+
+  // do recover.
+  std::shared_ptr<PluginHandleBase> new_plugin_handle;
+  ASSERT_TRUE(plugin_handle->doRecover(new_plugin_handle));
+  // Verify recover success.
+  ASSERT_FALSE(new_plugin_handle->wasm()->isFailed());
+  // Verify the pointer to WasmBase is different from the crashed one.
+  ASSERT_NE(new_plugin_handle->wasm(), plugin_handle->wasm());
+
+  // Cause runtime crash again.
+  new_plugin_handle->wasm()->wasm_vm()->fail(FailState::RuntimeError, "runtime error msg");
+  ASSERT_TRUE(new_plugin_handle->wasm()->isFailed());
+  // Do recover again.
+  std::shared_ptr<PluginHandleBase> new_plugin_handle2;
+  ASSERT_TRUE(new_plugin_handle->doRecover(new_plugin_handle2));
+  // Verify recover again success.
+  ASSERT_FALSE(new_plugin_handle2->wasm()->isFailed());
+  // Verify the pointer to WasmBase is different from the crashed one.
+  ASSERT_NE(new_plugin_handle2->wasm(), new_plugin_handle->wasm());
+
+  // This time, create another thread local plugin with *different* plugin key for the same vm_key.
+  // This one should reuse the recovered VM.
+  const auto another_plugin = std::make_shared<PluginBase>(
+      plugin_name, root_id, vm_id, engine_, plugin_config, fail_open, "another_plugin_key");
+  auto another_handle = getOrCreateThreadLocalPlugin(
+      base_wasm_handle, another_plugin, wasm_handle_clone_factory, plugin_handle_factory);
+  ASSERT_TRUE(another_handle && another_handle->plugin());
+  ASSERT_FALSE(another_handle->wasm()->isFailed());
+  // Verify the pointer to WasmBase is same with recovered one
+  ASSERT_EQ(another_handle->wasm(), new_plugin_handle2->wasm());
+  // Verify plugin handle is different
+  ASSERT_NE(another_handle, new_plugin_handle2);
+
+  // Cause runtime crash again.
+  new_plugin_handle2->wasm()->wasm_vm()->fail(FailState::RuntimeError, "runtime error msg");
+  ASSERT_TRUE(new_plugin_handle2->wasm()->isFailed());
+  // Create another thread local plugin with *different* plugin key before recover.
+  // This one also should not end up using the failed VM.
+  auto another_handle2 = getOrCreateThreadLocalPlugin(
+      base_wasm_handle, another_plugin, wasm_handle_clone_factory, plugin_handle_factory);
+  ASSERT_TRUE(another_handle2 && another_handle2->plugin());
+  ASSERT_FALSE(another_handle2->wasm()->isFailed());
+  // Verify the pointer to WasmBase is different from the failed one.
+  ASSERT_NE(another_handle2->wasm(), new_plugin_handle2->wasm());
+  // Do recover again.
+  std::shared_ptr<PluginHandleBase> new_plugin_handle3;
+  ASSERT_TRUE(new_plugin_handle2->doRecover(new_plugin_handle3));
+  // Verify the pointer to WasmBase is different from the crashed one.
+  ASSERT_NE(new_plugin_handle3->wasm(), new_plugin_handle2->wasm());
+
+  // Cause the another plugin with same vm_key crash.
+  another_handle2->wasm()->wasm_vm()->fail(FailState::RuntimeError, "runtime error msg");
+  ASSERT_TRUE(another_handle2->wasm()->isFailed());
+  // Do recover again
+  std::shared_ptr<PluginHandleBase> new_another_handle2;
+  ASSERT_TRUE(another_handle2->doRecover(new_another_handle2));
+  // Verify the pointer to WasmBase is different from the crashed one.
+  ASSERT_NE(new_another_handle2->wasm(), another_handle2->wasm());
+
+  // Cause the another plugin crash again
+  new_another_handle2->wasm()->wasm_vm()->fail(FailState::RuntimeError, "runtime error msg");
+  ASSERT_TRUE(new_another_handle2->wasm()->isFailed());
+  // Create thread local plugin with same plugin key
+  auto another_handle3 = getOrCreateThreadLocalPlugin(
+      base_wasm_handle, another_plugin, wasm_handle_clone_factory, plugin_handle_factory);
+  ASSERT_TRUE(another_handle3 && another_handle3->plugin());
+  ASSERT_FALSE(another_handle3->wasm()->isFailed());
+  // Verify the pointer to WasmBase is different from the failed one.
+  ASSERT_NE(another_handle3->wasm(), new_another_handle2->wasm());
+  // Do recover again.
+  std::shared_ptr<PluginHandleBase> new_another_handle3;
+  ASSERT_TRUE(new_another_handle2->doRecover(new_another_handle3));
+  // Recover should reuse the plugin handle
+  ASSERT_EQ(new_another_handle3, another_handle3);
+}
+
 // Tests the canary is always applied when making a call `createWasm`
 TEST_P(TestVm, AlwaysApplyCanary) {
   // Use different root_id, but the others are the same

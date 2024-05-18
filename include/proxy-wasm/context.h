@@ -136,6 +136,7 @@ class ContextBase : public RootInterface,
                     public StreamInterface,
                     public HeaderInterface,
                     public HttpCallInterface,
+                    public RedisCallInterface,
                     public GrpcCallInterface,
                     public GrpcStreamInterface,
                     public MetricsInterface,
@@ -151,6 +152,7 @@ public:
   virtual ~ContextBase();
 
   WasmBase *wasm() const { return wasm_; }
+  void clearWasm() { wasm_ = nullptr; }
   uint32_t id() const { return id_; }
   // The VM Context used for calling "malloc" has an id_ == 0.
   bool isVmContext() const { return id_ == 0; }
@@ -214,6 +216,10 @@ public:
   // Async call response.
   void onHttpCallResponse(HttpCallToken token, uint32_t headers, uint32_t body_size,
                           uint32_t trailers) override;
+
+  // Redis
+  void onRedisCallResponse(RedisCallToken token, uint32_t status, uint32_t response_size) override;
+
   // Grpc
   void onGrpcReceiveInitialMetadata(GrpcToken token, uint32_t elements) override;
   void onGrpcReceive(GrpcToken token, uint32_t response_size) override;
@@ -273,6 +279,16 @@ public:
   WasmResult httpCall(std::string_view /* target */, const Pairs & /*request_headers */,
                       std::string_view /* request_body */, const Pairs & /* request_trailers */,
                       int /* timeout_millisconds */, uint32_t * /* token_ptr */) override {
+    return unimplemented();
+  }
+
+  // Redis
+  WasmResult redisInit(std::string_view /* target */, std::string_view /* username */,
+                       std::string_view /* password */, int /* timeout_millisconds */) override {
+    return unimplemented();
+  }
+  WasmResult redisCall(std::string_view /* target */, std::string_view /* query */,
+                       uint32_t * /* token_ptr */) override {
     return unimplemented();
   }
 

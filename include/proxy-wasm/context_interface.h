@@ -37,6 +37,7 @@ using GrpcToken = uint32_t;
 using GrpcStatusCode = uint32_t;
 using SharedQueueDequeueToken = uint32_t;
 using SharedQueueEnqueueToken = uint32_t;
+using RedisCallToken = uint32_t;
 
 // TODO: update SDK and use this.
 enum class ProxyAction : uint32_t {
@@ -161,6 +162,12 @@ struct RootInterface : public RootGrpcInterface {
    */
   virtual void onHttpCallResponse(HttpCallToken token, uint32_t headers, uint32_t body_size,
                                   uint32_t trailers) = 0;
+  /**
+   * Called on a Root Context when a response arrives for an outstanding redisCall().
+   * @param token is the token returned by the corresponding redisCall().
+   */
+  virtual void onRedisCallResponse(RedisCallToken token, uint32_t status,
+                                   uint32_t response_size) = 0;
 
   /**
    * Called on a Root Context when an Inter-VM shared queue message has arrived.
@@ -414,6 +421,14 @@ struct HttpCallInterface {
   virtual WasmResult httpCall(std::string_view target, const Pairs &request_headers,
                               std::string_view request_body, const Pairs &request_trailers,
                               int timeout_milliseconds, HttpCallToken *token_ptr) = 0;
+};
+
+struct RedisCallInterface {
+  virtual ~RedisCallInterface() = default;
+  virtual WasmResult redisInit(std::string_view target, std::string_view username,
+                               std::string_view password, int timeout_milliseconds) = 0;
+  virtual WasmResult redisCall(std::string_view target, std::string_view query,
+                               RedisCallToken *token_ptr) = 0;
 };
 
 struct GrpcCallInterface {

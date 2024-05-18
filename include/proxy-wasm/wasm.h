@@ -17,6 +17,7 @@
 
 #include <string.h>
 
+#include <cassert>
 #include <atomic>
 #include <deque>
 #include <map>
@@ -71,6 +72,11 @@ public:
     if (it != contexts_.end())
       return it->second;
     return nullptr;
+  }
+  void clearWasmInContext() {
+    for (auto &item : contexts_) {
+      item.second->clearWasm();
+    }
   }
   uint32_t allocContextId();
   bool isFailed() { return failed_ != FailState::Ok; }
@@ -174,6 +180,7 @@ public:
     HttpCall = 0,
     GrpcCall = 1,
     GrpcStream = 2,
+    RedisCall = 3,
   };
   static const uint32_t kCalloutTypeMask = 0x3;  // Enough to cover the 3 types.
   static const uint32_t kCalloutIncrement = 0x4; // Enough to cover the 3 types.
@@ -186,6 +193,9 @@ public:
   bool isGrpcStreamId(uint32_t callout_id) {
     return (callout_id & kCalloutTypeMask) == static_cast<uint32_t>(CalloutType::GrpcStream);
   }
+  bool isRedisCallId(uint32_t callout_id) {
+    return (callout_id & kCalloutTypeMask) == static_cast<uint32_t>(CalloutType::RedisCall);
+  }
   uint32_t nextHttpCallId() {
     // TODO(PiotrSikora): re-add rollover protection (requires at least 1 billion callouts).
     return next_http_call_id_ += kCalloutIncrement;
@@ -197,6 +207,10 @@ public:
   uint32_t nextGrpcStreamId() {
     // TODO(PiotrSikora): re-add rollover protection (requires at least 1 billion callouts).
     return next_grpc_stream_id_ += kCalloutIncrement;
+  }
+  uint32_t nextRedisCallId() {
+    // TODO(PiotrSikora): re-add rollover protection (requires at least 1 billion callouts).
+    return next_redis_call_id_ += kCalloutIncrement;
   }
 
 protected:
@@ -257,6 +271,8 @@ protected:
 
   WasmCallVoid<5> on_http_call_response_;
 
+  WasmCallVoid<4> on_redis_call_response_;
+
   WasmCallVoid<3> on_grpc_receive_;
   WasmCallVoid<3> on_grpc_close_;
   WasmCallVoid<3> on_grpc_create_initial_metadata_;
@@ -276,9 +292,10 @@ protected:
           _f(on_downstream_connection_close) _f(on_upstream_connection_close) _f(on_request_body)  \
               _f(on_request_trailers) _f(on_request_metadata) _f(on_response_body)                 \
                   _f(on_response_trailers) _f(on_response_metadata) _f(on_http_call_response)      \
-                      _f(on_grpc_receive) _f(on_grpc_close) _f(on_grpc_receive_initial_metadata)   \
-                          _f(on_grpc_receive_trailing_metadata) _f(on_queue_ready) _f(on_done)     \
-                              _f(on_log) _f(on_delete)
+                      _f(on_redis_call_response) _f(on_grpc_receive) _f(on_grpc_close)             \
+                          _f(on_grpc_receive_initial_metadata)                                     \
+                              _f(on_grpc_receive_trailing_metadata) _f(on_queue_ready) _f(on_done) \
+                                  _f(on_log) _f(on_delete)
 
   // Capabilities which are allowed to be linked to the module. If this is empty, restriction
   // is not enforced.
@@ -307,6 +324,7 @@ protected:
   uint32_t next_http_call_id_ = static_cast<uint32_t>(CalloutType::HttpCall);
   uint32_t next_grpc_call_id_ = static_cast<uint32_t>(CalloutType::GrpcCall);
   uint32_t next_grpc_stream_id_ = static_cast<uint32_t>(CalloutType::GrpcStream);
+  uint32_t next_redis_call_id_ = static_cast<uint32_t>(CalloutType::RedisCall);
 
   // Actions to be done after the call into the VM returns.
   std::deque<std::function<void()>> after_vm_call_actions_;
@@ -335,8 +353,26 @@ public:
 
   std::shared_ptr<WasmBase> &wasm() { return wasm_base_; }
 
+  void setRecoverVmCallback(std::function<std::shared_ptr<WasmHandleBase>()> &&f) {
+    recover_vm_callback_ = std::move(f);
+  }
+
+  // Recover the wasm vm and generate a new wasm handle
+  bool doRecover(std::shared_ptr<WasmHandleBase> &new_handle) {
+    assert(new_handle == nullptr);
+    if (recover_vm_callback_ == nullptr) {
+      return true;
+    }
+    new_handle = recover_vm_callback_();
+    if (!new_handle) {
+      return false;
+    }
+    return true;
+  }
+
 protected:
   std::shared_ptr<WasmBase> wasm_base_;
+  std::function<std::shared_ptr<WasmHandleBase>()> recover_vm_callback_;
   std::unordered_map<std::string, bool> plugin_canary_cache_;
 };
 
@@ -365,10 +401,35 @@ public:
 
   std::shared_ptr<PluginBase> &plugin() { return plugin_; }
   std::shared_ptr<WasmBase> &wasm() { return wasm_handle_->wasm(); }
+  std::shared_ptr<WasmHandleBase> &wasmHandle() { return wasm_handle_; }
+
+  void setRecoverPluginCallback(
+      std::function<std::shared_ptr<PluginHandleBase>(std::shared_ptr<WasmHandleBase> &)> &&f) {
+    recover_plugin_callback_ = std::move(f);
+  }
+
+  // Recover the wasm plugin and generate a new plugin handle
+  bool doRecover(std::shared_ptr<PluginHandleBase> &new_handle) {
+    assert(new_handle == nullptr);
+    if (recover_plugin_callback_ == nullptr) {
+      return true;
+    }
+    std::shared_ptr<WasmHandleBase> new_wasm_handle;
+    if (!wasm_handle_->doRecover(new_wasm_handle)) {
+      return false;
+    }
+    new_handle = recover_plugin_callback_(new_wasm_handle);
+    if (!new_handle) {
+      return false;
+    }
+    return true;
+  }
 
 protected:
   std::shared_ptr<PluginBase> plugin_;
   std::shared_ptr<WasmHandleBase> wasm_handle_;
+  std::function<std::shared_ptr<PluginHandleBase>(std::shared_ptr<WasmHandleBase> &)>
+      recover_plugin_callback_;
 };
 
 using PluginHandleFactory = std::function<std::shared_ptr<PluginHandleBase>(

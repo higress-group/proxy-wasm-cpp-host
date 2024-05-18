@@ -533,6 +533,35 @@ Word http_call(Word uri_ptr, Word uri_size, Word header_pairs_ptr, Word header_p
   return result;
 }
 
+Word redis_init(Word service_ptr, Word service_size, Word username_ptr, Word username_size,
+                Word passowrd_ptr, Word password_size, Word timeout_milliseconds) {
+  auto *context = contextOrEffectiveContext()->root_context();
+  auto service = context->wasmVm()->getMemory(service_ptr, service_size);
+  auto username = context->wasmVm()->getMemory(username_ptr, username_size);
+  auto password = context->wasmVm()->getMemory(passowrd_ptr, password_size);
+  if (!service || !username || !password) {
+    return WasmResult::InvalidMemoryAccess;
+  }
+  return context->redisInit(service.value(), username.value(), password.value(),
+                            timeout_milliseconds);
+}
+
+Word redis_call(Word service_ptr, Word service_size, Word query_ptr, Word query_size,
+                Word token_ptr) {
+  auto *context = contextOrEffectiveContext()->root_context();
+  auto service = context->wasmVm()->getMemory(service_ptr, service_size);
+  auto query = context->wasmVm()->getMemory(query_ptr, query_size);
+  uint32_t token = 0;
+  // NB: try to write the token to verify the memory before starting the async
+  // operation.
+  if (!context->wasm()->setDatatype(token_ptr, token)) {
+    return WasmResult::InvalidMemoryAccess;
+  }
+  auto result = context->redisCall(service.value(), query.value(), &token);
+  context->wasm()->setDatatype(token_ptr, token);
+  return result;
+}
+
 Word define_metric(Word metric_type, Word name_ptr, Word name_size, Word metric_id_ptr) {
   auto *context = contextOrEffectiveContext();
   auto name = context->wasmVm()->getMemory(name_ptr, name_size);

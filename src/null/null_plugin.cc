@@ -127,6 +127,20 @@ void NullPlugin::getFunction(std::string_view function_name, WasmCallVoid<3> *f)
   }
 }
 
+void NullPlugin::getFunction(std::string_view function_name, WasmCallVoid<4> *f) {
+  auto *plugin = this;
+  if (function_name == "proxy_on_redis_call_response") {
+    *f = [plugin](ContextBase *context, Word context_id, Word token, Word status,
+                  Word response_size) {
+      SaveRestoreContext saved_context(context);
+      plugin->onRedisCallResponse(context_id, token, status, response_size);
+    };
+  } else if (!wasm_vm_->integration()->getNullVmFunction(function_name, false, 4, this, f)) {
+    error("Missing getFunction for: " + std::string(function_name));
+    *f = nullptr;
+  }
+}
+
 void NullPlugin::getFunction(std::string_view function_name, WasmCallVoid<5> *f) {
   auto *plugin = this;
   if (function_name == "proxy_on_http_call_response") {
@@ -439,6 +453,12 @@ uint64_t NullPlugin::onResponseMetadata(uint64_t context_id, uint64_t elements) 
 void NullPlugin::onHttpCallResponse(uint64_t context_id, uint64_t token, uint64_t headers,
                                     uint64_t body_size, uint64_t trailers) {
   getRootContext(context_id)->onHttpCallResponse(token, headers, body_size, trailers);
+}
+
+void NullPlugin::onRedisCallResponse(uint64_t context_id, uint64_t token, uint64_t status,
+                                     uint64_t response_size) {
+  getRootContext(context_id)
+      ->onRedisCallResponse(token, static_cast<RedisStatus>(status), response_size);
 }
 
 void NullPlugin::onGrpcReceive(uint64_t context_id, uint64_t token, size_t body_size) {

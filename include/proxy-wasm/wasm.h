@@ -75,8 +75,11 @@ public:
   }
   void clearWasmInContext() {
     for (auto &item : contexts_) {
-      item.second->clearWasm();
+      if (item.second != nullptr) {
+        item.second->clearWasm();
+      }
     }
+    contexts_.clear();
   }
   uint32_t allocContextId();
   bool isFailed() { return failed_ != FailState::Ok; }

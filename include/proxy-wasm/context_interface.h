@@ -335,6 +335,9 @@ struct StreamInterface {
    */
   virtual const BufferInterface *getBuffer(WasmBufferType type) = 0;
 
+  virtual WasmResult setBuffer(WasmBufferType type, size_t start, size_t length,
+                               std::string_view data) = 0;
+
   /**
    * Provides the end-of-stream status of the given flow (if any) or false.  End of stream occurs
    * when a connection is closed (or half-closed) either locally or remotely.

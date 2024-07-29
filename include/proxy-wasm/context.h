@@ -270,6 +270,12 @@ public:
     unimplemented();
     return nullptr;
   }
+
+  WasmResult setBuffer(WasmBufferType /* type */, size_t /* start */, size_t /* length */,
+                       std::string_view /* data */) override {
+    return unimplemented();
+  }
+
   bool endOfStream(WasmStreamType /* type */) override {
     unimplemented();
     return true;

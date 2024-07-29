@@ -497,15 +497,11 @@ Word set_buffer_bytes(Word type, Word start, Word length, Word data_ptr, Word da
     return WasmResult::BadArgument;
   }
   auto *context = contextOrEffectiveContext();
-  auto *buffer = context->getBuffer(static_cast<WasmBufferType>(type.u64_));
-  if (buffer == nullptr) {
-    return WasmResult::NotFound;
-  }
   auto data = context->wasmVm()->getMemory(data_ptr, data_size);
   if (!data) {
     return WasmResult::InvalidMemoryAccess;
   }
-  return buffer->copyFrom(start, length, data.value());
+  return context->setBuffer(static_cast<WasmBufferType>(type.u64_), start, length, data.value());
 }
 
 Word http_call(Word uri_ptr, Word uri_size, Word header_pairs_ptr, Word header_pairs_size,

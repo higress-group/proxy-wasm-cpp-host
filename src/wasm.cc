@@ -606,8 +606,14 @@ void setWasmRecoverCallback(const std::string &vm_key,
                             const std::shared_ptr<WasmHandleBase> &base_handle,
                             const WasmHandleCloneFactory &clone_factory) {
   std::weak_ptr<WasmHandleBase> wasm_handle_for_copy = wasm_handle;
-  wasm_handle->setRecoverVmCallback([vm_key, wasm_handle_for_copy, base_handle,
+  std::weak_ptr<WasmHandleBase> base_handle_for_copy = base_handle;
+  wasm_handle->setRecoverVmCallback([vm_key, wasm_handle_for_copy, base_handle_for_copy,
                                      clone_factory]() -> std::shared_ptr<WasmHandleBase> {
+    const auto base_handle = base_handle_for_copy.lock();
+    if (!base_handle) {
+      std::cerr << "Failed to get base_handle shared_ptr in setRecoverVmCallback" << std::endl;
+      return nullptr;
+    }
     const auto &integration = base_handle->wasm()->wasm_vm()->integration();
     integration->trace("Start recover wasm_handle");
     auto it = local_wasms.find(vm_key);
@@ -694,9 +700,17 @@ void setPluginRecoverCallback(const std::string &key,
                               const std::shared_ptr<WasmHandleBase> &base_handle,
                               const std::shared_ptr<PluginBase> &plugin,
                               const PluginHandleFactory &plugin_factory) {
+  std::weak_ptr<WasmHandleBase> base_handle_for_copy = base_handle;
+
   plugin_handle->setRecoverPluginCallback(
-      [key, base_handle, plugin, plugin_factory](
+      [key, base_handle_for_copy, plugin, plugin_factory](
           std::shared_ptr<WasmHandleBase> &wasm_handle) -> std::shared_ptr<PluginHandleBase> {
+        const auto base_handle = base_handle_for_copy.lock();
+        if (!base_handle) {
+          std::cerr << "Failed to get base_handle shared_ptr in setRecoverPluginCallback"
+                    << std::endl;
+          return nullptr;
+        }
         const auto &integration = base_handle->wasm()->wasm_vm()->integration();
         integration->trace("Start recover plugin_handle");
         auto it = local_plugins.find(key);

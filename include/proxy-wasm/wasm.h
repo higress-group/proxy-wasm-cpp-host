@@ -304,7 +304,7 @@ protected:
   // is not enforced.
   AllowedCapabilitiesMap allowed_capabilities_;
 
-  std::shared_ptr<WasmHandleBase> base_wasm_handle_;
+  std::weak_ptr<WasmHandleBase> base_wasm_handle_weak_;
 
   // Used by the base_wasm to enable non-clonable thread local Wasm(s) to be constructed.
   std::string module_bytecode_;
@@ -448,8 +448,9 @@ std::shared_ptr<PluginHandleBase> getOrCreateThreadLocalPlugin(
 void clearWasmCachesForTesting();
 
 inline const std::string &WasmBase::vm_configuration() const {
-  if (base_wasm_handle_)
-    return base_wasm_handle_->wasm()->vm_configuration_;
+  auto base_wasm_handle = base_wasm_handle_weak_.lock();
+  if (base_wasm_handle)
+    return base_wasm_handle->wasm()->vm_configuration_;
   return vm_configuration_;
 }
 

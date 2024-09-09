@@ -221,7 +221,7 @@ WasmBase::WasmBase(const std::shared_ptr<WasmHandleBase> &base_wasm_handle,
       started_from_(base_wasm_handle->wasm()->wasm_vm()->cloneable()),
       envs_(base_wasm_handle->wasm()->envs()),
       allowed_capabilities_(base_wasm_handle->wasm()->allowed_capabilities_),
-      base_wasm_handle_(base_wasm_handle) {
+      base_wasm_handle_weak_(base_wasm_handle) {
   if (started_from_ != Cloneable::NotCloneable) {
     wasm_vm_ = base_wasm_handle->wasm()->wasm_vm()->clone();
   } else {
@@ -338,9 +338,14 @@ bool WasmBase::initialize() {
   }
 
   if (started_from_ == Cloneable::NotCloneable) {
-    auto ok = wasm_vm_->load(base_wasm_handle_->wasm()->moduleBytecode(),
-                             base_wasm_handle_->wasm()->modulePrecompiled(),
-                             base_wasm_handle_->wasm()->functionNames());
+    auto base_wasm_handle = base_wasm_handle_weak_.lock();
+    if (!base_wasm_handle) {
+      fail(FailState::UnableToInitializeCode, "Base wasm handle is null");
+      return false;
+    }
+    auto ok = wasm_vm_->load(base_wasm_handle->wasm()->moduleBytecode(),
+                             base_wasm_handle->wasm()->modulePrecompiled(),
+                             base_wasm_handle->wasm()->functionNames());
     if (!ok) {
       fail(FailState::UnableToInitializeCode, "Failed to load Wasm module from base Wasm");
       return false;
@@ -348,7 +353,12 @@ bool WasmBase::initialize() {
   }
 
   if (started_from_.has_value()) {
-    abi_version_ = base_wasm_handle_->wasm()->abiVersion();
+    auto base_wasm_handle = base_wasm_handle_weak_.lock();
+    if (!base_wasm_handle) {
+      fail(FailState::UnableToInitializeCode, "Base wasm handle is null");
+      return false;
+    }
+    abi_version_ = base_wasm_handle->wasm()->abiVersion();
   }
 
   if (started_from_ != Cloneable::InstantiatedModule) {

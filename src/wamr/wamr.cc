@@ -129,17 +129,17 @@ bool Wamr::load(std::string_view bytecode, std::string_view precompiled,
   wasm_byte_vec_t binary = {0};
   if (precompiled.empty()) {
     binary.size = bytecode.size();
-    binary.data = static_cast<char *> bytecode.data();
+    binary.data = const_cast<char *>(bytecode.data());
     binary.num_elems = bytecode.size();
     binary.size_of_elem = sizeof(byte_t);
     binary.lock = nullptr;
   } else {
     // skip leading paddings
-    uint8_t padding_count = static_cast<uint8_t> precompiled[0];
+    uint8_t padding_count = static_cast<uint8_t>(precompiled[0]);
     precompiled.remove_prefix(padding_count + 1);
 
     binary.size = precompiled.size();
-    binary.data = static_cast<char *> precompiled.data();
+    binary.data = const_cast<char *>(precompiled.data());
     binary.num_elems = precompiled.size();
     binary.size_of_elem = sizeof(byte_t);
     binary.lock = nullptr;
@@ -239,8 +239,8 @@ static const char *printValKind(wasm_valkind_t kind) {
     return "f32";
   case WASM_F64:
     return "f64";
-  case WASM_EXTERNREF:
-    return "externref";
+  case WASM_ANYREF:
+    return "anyref";
   case WASM_FUNCREF:
     return "funcref";
   default:

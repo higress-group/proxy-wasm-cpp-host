@@ -155,6 +155,7 @@ Word wasi_unstable_clock_time_get(Word, uint64_t, Word);
 Word wasi_unstable_random_get(Word, Word);
 Word pthread_equal(Word left, Word right);
 void emscripten_notify_memory_growth(Word);
+Word wasi_unstable_path_filestat_get(Word fd, Word flags, Word path, Word path_len, Word buf);
 
 // Support for embedders, not exported to Wasm.
 
@@ -181,7 +182,7 @@ void emscripten_notify_memory_growth(Word);
   _f(fd_write) _f(fd_read) _f(fd_seek) _f(fd_close) _f(fd_fdstat_get) _f(fd_fdstat_set_flags)      \
       _f(environ_get) _f(environ_sizes_get) _f(args_get) _f(args_sizes_get) _f(clock_time_get)     \
           _f(random_get) _f(sched_yield) _f(poll_oneoff) _f(proc_exit) _f(path_open)               \
-              _f(fd_prestat_get) _f(fd_prestat_dir_name)
+              _f(fd_prestat_get) _f(fd_prestat_dir_name) _f(path_filestat_get)
 
 // Helpers to generate a stub to pass to VM, in place of a restricted proxy-wasm capability.
 #define _CREATE_PROXY_WASM_STUB(_fn)                                                               \

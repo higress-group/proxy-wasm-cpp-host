@@ -784,6 +784,14 @@ Word wasi_unstable_fd_close(Word /*fd*/) {
   return 0;
 }
 
+// __wasi_errno_t __wasi_path_filestat_get(__wasi_fd_t fd,__wasi_lookupflags_t flags,const char
+// *path,size_t path_len,__wasi_filestat_t *buf);
+
+Word wasi_unstable_path_filestat_get(Word /*fd*/, Word /*flags*/, Word /*path*/, Word /*path_len*/,
+                                     Word /*buf*/) {
+  return 58; // __WASI_ENOTSUP
+}
+
 // __wasi_errno_t __wasi_fd_fdstat_get(__wasi_fd_t fd, __wasi_fdstat_t *stat)
 Word wasi_unstable_fd_fdstat_get(Word fd, Word statOut) {
   // We will only support this interface on stdout and stderr

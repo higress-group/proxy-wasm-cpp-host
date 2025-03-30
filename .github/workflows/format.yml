@@ -28,9 +28,6 @@ on:
     - 'envoy-release/**'
     - 'istio-release/**'
 
-  schedule:
-    - cron: '0 0 * * *'
-
 concurrency:
 
   group: ${{ github.head_ref || github.run_id }}-${{ github.workflow }}

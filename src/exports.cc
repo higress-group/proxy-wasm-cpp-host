@@ -694,6 +694,11 @@ Word wasi_unstable_fd_prestat_dir_name(Word /*fd*/, Word /*path_ptr*/, Word /*pa
   return 52; // __WASI_ERRNO_ENOSYS
 }
 
+//__wasi_errno_t __wasi_fd_filestat_get(__wasi_fd_t fd,__wasi_filestat_t *retptr0)
+Word wasi_unstable_fd_filestat_get(Word /*fd*/, Word /*buf_ptr*/) {
+  return 8; // __WASI_ERRNO_BADF
+}
+
 // Implementation of writev-like() syscall that redirects stdout/stderr to Envoy
 // logs.
 Word writevImpl(Word fd, Word iovs, Word iovs_len, Word *nwritten_ptr) {

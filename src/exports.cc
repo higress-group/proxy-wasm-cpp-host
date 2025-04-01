@@ -938,8 +938,15 @@ Word wasi_unstable_sched_yield() {
 // __wasi_errno_t __wasi_poll_oneoff(const __wasi_subscription_t *in, __wasi_event_t *out,
 // __wasi_size_t nsubscriptions, __wasi_size_t *nevents)
 Word wasi_unstable_poll_oneoff(Word /*in*/, Word /*out*/, Word /*nsubscriptions*/,
-                               Word /*nevents_ptr*/) {
-  return 52; // __WASI_ERRNO_ENOSYS
+                               Word nevents_ptr) {
+  auto *context = contextOrEffectiveContext();
+
+  // Since we are not performing event polling, directly set nevents to 0
+  if (!context->wasmVm()->setWord(nevents_ptr, Word(0))) {
+    return 21; // __WASI_EFAULT - If there is a failure setting memory
+  }
+
+  return 0; // __WASI_ESUCCESS
 }
 
 // void __wasi_proc_exit(__wasi_exitcode_t rval);

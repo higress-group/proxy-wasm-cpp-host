@@ -255,6 +255,9 @@ public:
 
   // Call just before the Context is deleted. See RootInterface.
   virtual void onDelete() = 0;
+
+  // Inject encoded data to filter chain
+  virtual WasmResult injectEncodedDataToFilterChain(std::string_view /* body_text */, bool /* end_stream */) = 0;
 };
 
 /**

@@ -353,6 +353,12 @@ public:
                                std::string_view /* details */) override {
     return unimplemented();
   }
+
+  // Inject Data
+  WasmResult injectEncodedDataToFilterChain(std::string_view /* body_text */, bool /* end_stream */) override {
+    return unimplemented();
+  }
+  
   void clearRouteCache() override { unimplemented(); }
   void failStream(WasmStreamType stream_type) override { closeStream(stream_type); }
 

@@ -159,6 +159,16 @@ Word send_local_response(Word response_code, Word response_code_details_ptr,
   return WasmResult::Ok;
 }
 
+Word inject_encoded_data_to_filter_chain(Word body_ptr, Word body_size, Word end_stream) {
+  auto *context = contextOrEffectiveContext();
+  auto body = context->wasmVm()->getMemory(body_ptr, body_size);
+  if (!body) {
+    return WasmResult::InvalidMemoryAccess;
+  }
+  context->injectEncodedDataToFilterChain(body.value(), end_stream != 0U);
+  return WasmResult::Ok;
+}
+
 Word clear_route_cache() {
   auto *context = contextOrEffectiveContext();
   context->clearRouteCache();

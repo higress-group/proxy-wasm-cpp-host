@@ -466,7 +466,7 @@ inline void *WasmBase::allocMemory(uint64_t size, uint64_t *address) {
   //            // time
   //            "wasi_unstable.clock_time_get", "wasi_snapshot_preview1.clock_time_get",
   //            // go runtime gc sleep
-  //            "wasi_unstable.poll_oneoff"});
+  //            "wasi_unstable.poll_oneoff", "wasi_snapshot_preview1.poll_oneoff"});
   Word a = malloc_(vm_context(), size);
   // wasm_vm_->setRestrictedCallback(false);
   if (!a.u64_) {

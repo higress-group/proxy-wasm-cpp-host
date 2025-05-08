@@ -102,6 +102,11 @@ proxy_send_local_response(uint32_t response_code, const char *response_code_deta
       WR(body_ptr), WS(body_size), WR(additional_response_header_pairs_ptr),
       WS(additional_response_header_pairs_size), WS(grpc_status)));
 }
+inline WasmResult
+proxy_inject_encoded_data_to_filter_chain(const char *body_ptr, size_t body_size, bool end_stream) {
+  return wordToWasmResult(exports::inject_encoded_data_to_filter_chain(
+      WR(body_ptr), WS(body_size), WS(end_stream)));
+}
 
 inline WasmResult proxy_clear_route_cache() {
   return wordToWasmResult(exports::clear_route_cache());

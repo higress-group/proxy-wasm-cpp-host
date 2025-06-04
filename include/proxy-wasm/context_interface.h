@@ -31,6 +31,7 @@ namespace proxy_wasm {
 
 using Pairs = std::vector<std::pair<std::string_view, std::string_view>>;
 using PairsWithStringValues = std::vector<std::pair<std::string_view, std::string>>;
+using StringPairs = std::vector<std::pair<std::string, std::string>>;
 using TimerToken = uint32_t;
 using HttpCallToken = uint32_t;
 using GrpcToken = uint32_t;
@@ -255,6 +256,14 @@ public:
 
   // Call just before the Context is deleted. See RootInterface.
   virtual void onDelete() = 0;
+
+  // Inject encoded data to filter chain
+  virtual WasmResult injectEncodedDataToFilterChain(std::string_view /* body_text */, bool /* end_stream */) = 0;
+
+  // Get all enpoint metrics of upstream cluster
+  virtual WasmResult getUpstreamHosts(StringPairs * /* result */) = 0;
+  // Override upstream host and bypass lb policy
+  virtual WasmResult setUpstreamOverrideHost(std::string_view /* address */) = 0;
 };
 
 /**

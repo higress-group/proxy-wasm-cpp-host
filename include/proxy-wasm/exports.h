@@ -78,6 +78,9 @@ Word send_local_response(Word response_code, Word response_code_details_ptr,
                          Word response_code_details_size, Word body_ptr, Word body_size,
                          Word additional_response_header_pairs_ptr,
                          Word additional_response_header_pairs_size, Word grpc_status);
+Word inject_encoded_data_to_filter_chain(Word body_ptr, Word body_size, Word end_stream);
+Word set_upstream_override_host(Word address_ptr, Word address_size);
+Word get_upstream_hosts(Word ptr, Word size);
 Word clear_route_cache();
 Word get_shared_data(Word key_ptr, Word key_size, Word value_ptr_ptr, Word value_size_ptr,
                      Word cas_ptr);
@@ -198,7 +201,9 @@ Word wasi_unstable_path_filestat_get(Word fd, Word flags, Word path, Word path_l
                                       _f(increment_metric) _f(record_metric) _f(get_metric)        \
                                           _f(set_effective_context) _f(done)                       \
                                               _f(call_foreign_function) _f(redis_init)             \
-                                                  _f(redis_call)
+                                                _f(redis_call) _f(get_upstream_hosts)              \
+                                                  _f(inject_encoded_data_to_filter_chain)          \
+                                                    _f(set_upstream_override_host)
 
 #define FOR_ALL_HOST_FUNCTIONS_ABI_SPECIFIC(_f)                                                    \
   _f(get_configuration) _f(continue_request) _f(continue_response) _f(clear_route_cache)           \

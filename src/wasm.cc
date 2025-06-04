@@ -153,6 +153,9 @@ void WasmBase::registerCallbacks() {
     _REGISTER_PROXY(get_log_level);
     _REGISTER_PROXY(redis_init);
     _REGISTER_PROXY(redis_call);
+    _REGISTER_PROXY(inject_encoded_data_to_filter_chain);
+    _REGISTER_PROXY(set_upstream_override_host);
+    _REGISTER_PROXY(get_upstream_hosts);
   }
 #undef _REGISTER_PROXY
 

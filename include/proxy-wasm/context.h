@@ -353,6 +353,22 @@ public:
                                std::string_view /* details */) override {
     return unimplemented();
   }
+
+  // Inject Data
+  WasmResult injectEncodedDataToFilterChain(std::string_view /* body_text */, bool /* end_stream */) override {
+    return unimplemented();
+  }
+  
+  // Get all enpoint metrics of upstream cluster
+  WasmResult getUpstreamHosts(StringPairs * /* result */) override {
+    return unimplemented();
+  }
+  
+  // Override upstream host and bypass lb policy
+  WasmResult setUpstreamOverrideHost(std::string_view /* address */) override {
+    return unimplemented();
+  }
+  
   void clearRouteCache() override { unimplemented(); }
   void failStream(WasmStreamType stream_type) override { closeStream(stream_type); }
 

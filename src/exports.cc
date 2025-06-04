@@ -159,6 +159,58 @@ Word send_local_response(Word response_code, Word response_code_details_ptr,
   return WasmResult::Ok;
 }
 
+Word inject_encoded_data_to_filter_chain(Word body_ptr, Word body_size, Word end_stream) {
+  auto *context = contextOrEffectiveContext();
+  auto body = context->wasmVm()->getMemory(body_ptr, body_size);
+  if (!body) {
+    return WasmResult::InvalidMemoryAccess;
+  }
+  context->injectEncodedDataToFilterChain(body.value(), end_stream != 0U);
+  return WasmResult::Ok;
+}
+
+Word get_upstream_hosts(Word ptr_ptr, Word size_ptr) {
+  auto *context = contextOrEffectiveContext();
+  StringPairs pairs;
+  auto result = context->getUpstreamHosts(&pairs);
+  if (result != WasmResult::Ok) {
+    return result;
+  }
+  if (pairs.empty()) {
+    if (!context->wasm()->copyToPointerSize("", ptr_ptr, size_ptr)) {
+      return WasmResult::InvalidMemoryAccess;
+    }
+    return WasmResult::Ok;
+  }
+  uint64_t size = PairsUtil::pairsSize(pairs);
+  uint64_t ptr = 0;
+  char *buffer = static_cast<char *>(context->wasm()->allocMemory(size, &ptr));
+  if (buffer == nullptr) {
+    return WasmResult::InvalidMemoryAccess;
+  }
+  if (!PairsUtil::marshalPairs(pairs, buffer, size)) {
+    return WasmResult::InvalidMemoryAccess;
+  }
+  if (!context->wasmVm()->setWord(ptr_ptr, Word(ptr))) {
+    return WasmResult::InvalidMemoryAccess;
+  }
+  if (!context->wasmVm()->setWord(size_ptr, Word(size))) {
+    return WasmResult::InvalidMemoryAccess;
+  }
+  return WasmResult::Ok;
+}
+
+Word set_upstream_override_host(Word address_ptr, Word address_size) {
+  auto *context = contextOrEffectiveContext();
+  auto address = context->wasmVm()->getMemory(address_ptr, address_size);
+  if (!address) {
+    return WasmResult::InvalidMemoryAccess;
+  }
+  context->setUpstreamOverrideHost(address.value());
+  return WasmResult::Ok;
+}
+
+
 Word clear_route_cache() {
   auto *context = contextOrEffectiveContext();
   context->clearRouteCache();

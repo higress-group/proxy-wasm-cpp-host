@@ -729,7 +729,7 @@ getOrCreateThreadLocalWasm(const std::shared_ptr<WasmHandleBase> &base_handle,
 
 void setPluginFailCallback(const std::string &key,
                            const std::shared_ptr<WasmHandleBase> &wasm_handle) {
-  wasm_handle->wasm()->wasm_vm()->addFailCallback([key](proxy_wasm::FailState fail_state) {
+  wasm_handle->wasm()->wasm_vm()->addFailCallback(key, [key](proxy_wasm::FailState fail_state) {
     if (fail_state == proxy_wasm::FailState::RuntimeError) {
       // If VM failed, erase the entry so that:
       // 1) we can recreate the new thread local plugin from the same base_wasm.
@@ -819,6 +819,7 @@ std::shared_ptr<PluginHandleBase> getOrCreateThreadLocalPlugin(
   }
   auto plugin_handle = plugin_factory(wasm_handle, plugin);
   cacheLocalPlugin(key, plugin_handle);
+  plugin_handle->setPluginHandleKey(key);
   setPluginFailCallback(key, wasm_handle);
   setPluginRecoverCallback(key, plugin_handle, base_handle, plugin, plugin_factory);
   return plugin_handle;

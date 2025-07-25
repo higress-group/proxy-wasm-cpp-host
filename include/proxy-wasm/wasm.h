@@ -399,12 +399,15 @@ public:
   ~PluginHandleBase() {
     if (wasm_handle_) {
       wasm_handle_->wasm()->startShutdown(plugin_->key());
+      wasm_handle_->wasm()->wasm_vm()->removeFailCallback(plugin_handle_key_);
     }
   }
 
   std::shared_ptr<PluginBase> &plugin() { return plugin_; }
   std::shared_ptr<WasmBase> &wasm() { return wasm_handle_->wasm(); }
   std::shared_ptr<WasmHandleBase> &wasmHandle() { return wasm_handle_; }
+
+  void setPluginHandleKey(std::string_view key) { plugin_handle_key_ = std::string(key); }
 
   void setRecoverPluginCallback(
       std::function<std::shared_ptr<PluginHandleBase>(std::shared_ptr<WasmHandleBase> &)> &&f) {
@@ -433,6 +436,10 @@ protected:
   std::shared_ptr<WasmHandleBase> wasm_handle_;
   std::function<std::shared_ptr<PluginHandleBase>(std::shared_ptr<WasmHandleBase> &)>
       recover_plugin_callback_;
+
+private:
+  // key for the plugin handle, used to identify the key in fail callbacks
+  std::string plugin_handle_key_;
 };
 
 using PluginHandleFactory = std::function<std::shared_ptr<PluginHandleBase>(

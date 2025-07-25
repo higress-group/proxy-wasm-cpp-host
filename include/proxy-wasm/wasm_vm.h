@@ -328,12 +328,27 @@ public:
   void fail(FailState fail_state, std::string_view message) {
     integration()->error(message);
     failed_ = fail_state;
-    for (auto &callback : fail_callbacks_) {
+    for (auto & [key, callback] : fail_callbacks_) {
       callback(fail_state);
     }
   }
-  void addFailCallback(std::function<void(FailState)> fail_callback) {
-    fail_callbacks_.push_back(fail_callback);
+
+  /**
+   * Generates id for fail callbacks allowing direct insertion of the function.
+   * Note: if fail callback needs to be removed later, must provide specific key.
+   */
+   void addFailCallback(std::function<void(FailState)> fail_callback) {
+    static int id = 0;
+    std::string key = std::to_string(id++);
+    addFailCallback(key, std::move(fail_callback));
+  }
+
+  void addFailCallback(const std::string& key, std::function<void(FailState)> fail_callback) {
+    fail_callbacks_[key] = std::move(fail_callback);
+  }
+
+  void removeFailCallback(const std::string& key) {
+    fail_callbacks_.erase(key);
   }
 
   bool isHostFunctionAllowed(const std::string &name) {
@@ -353,7 +368,7 @@ public:
 protected:
   std::unique_ptr<WasmVmIntegration> integration_;
   FailState failed_ = FailState::Ok;
-  std::vector<std::function<void(FailState)>> fail_callbacks_;
+  std::unordered_map<std::string, std::function<void(FailState)>> fail_callbacks_;
 
 private:
   bool restricted_callback_{false};

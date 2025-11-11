@@ -85,6 +85,10 @@ public:
   bool isFailed() { return failed_ != FailState::Ok; }
   FailState fail_state() { return failed_; }
 
+  // Rebuild state management
+  bool shouldRebuild() const { return should_rebuild_; }
+  void setShouldRebuild(bool should_rebuild) { should_rebuild_ = should_rebuild; }
+
   const std::string &vm_configuration() const;
 
   const std::string &moduleBytecode() const { return module_bytecode_; }
@@ -317,6 +321,7 @@ protected:
   std::string vm_configuration_;
   bool stop_iteration_ = false;
   FailState failed_ = FailState::Ok; // Wasm VM fatal error.
+  bool should_rebuild_ = false;      // Wasm VM rebuild flag.
 
   // Plugin Stats/Metrics
   uint32_t next_counter_metric_id_ = static_cast<uint32_t>(MetricType::Counter);
@@ -360,8 +365,8 @@ public:
     recover_vm_callback_ = std::move(f);
   }
 
-  // Recover the wasm vm and generate a new wasm handle
-  bool doRecover(std::shared_ptr<WasmHandleBase> &new_handle) {
+  // Rebuild the wasm vm and generate a new wasm handle
+  bool rebuild(std::shared_ptr<WasmHandleBase> &new_handle) {
     assert(new_handle == nullptr);
     if (recover_vm_callback_ == nullptr) {
       return true;
@@ -414,18 +419,22 @@ public:
     recover_plugin_callback_ = std::move(f);
   }
 
-  // Recover the wasm plugin and generate a new plugin handle
-  bool doRecover(std::shared_ptr<PluginHandleBase> &new_handle) {
+  // Rebuild the wasm plugin and generate a new plugin handle
+  bool rebuild(std::shared_ptr<PluginHandleBase> &new_handle) {
     assert(new_handle == nullptr);
     if (recover_plugin_callback_ == nullptr) {
       return true;
     }
     std::shared_ptr<WasmHandleBase> new_wasm_handle;
-    if (!wasm_handle_->doRecover(new_wasm_handle)) {
+    if (!wasm_handle_->rebuild(new_wasm_handle)) {
+      std::cerr << "wasmHandle rebuild failed"
+                << "\n";
       return false;
     }
     new_handle = recover_plugin_callback_(new_wasm_handle);
     if (!new_handle) {
+      std::cerr << "pluginHandle rebuild failed"
+                << "\n";
       return false;
     }
     return true;

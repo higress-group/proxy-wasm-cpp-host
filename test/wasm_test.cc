@@ -170,7 +170,7 @@ TEST_P(TestVm, RecoverCrashedThreadLocalWasm) {
 
   // do recover.
   std::shared_ptr<PluginHandleBase> new_plugin_handle;
-  ASSERT_TRUE(plugin_handle->doRecover(new_plugin_handle));
+  ASSERT_TRUE(plugin_handle->rebuild(new_plugin_handle));
   // Verify recover success.
   ASSERT_FALSE(new_plugin_handle->wasm()->isFailed());
   // Verify the pointer to WasmBase is different from the crashed one.
@@ -181,7 +181,7 @@ TEST_P(TestVm, RecoverCrashedThreadLocalWasm) {
   ASSERT_TRUE(new_plugin_handle->wasm()->isFailed());
   // Do recover again.
   std::shared_ptr<PluginHandleBase> new_plugin_handle2;
-  ASSERT_TRUE(new_plugin_handle->doRecover(new_plugin_handle2));
+  ASSERT_TRUE(new_plugin_handle->rebuild(new_plugin_handle2));
   // Verify recover again success.
   ASSERT_FALSE(new_plugin_handle2->wasm()->isFailed());
   // Verify the pointer to WasmBase is different from the crashed one.
@@ -213,7 +213,7 @@ TEST_P(TestVm, RecoverCrashedThreadLocalWasm) {
   ASSERT_NE(another_handle2->wasm(), new_plugin_handle2->wasm());
   // Do recover again.
   std::shared_ptr<PluginHandleBase> new_plugin_handle3;
-  ASSERT_TRUE(new_plugin_handle2->doRecover(new_plugin_handle3));
+  ASSERT_TRUE(new_plugin_handle2->rebuild(new_plugin_handle3));
   // Verify the pointer to WasmBase is different from the crashed one.
   ASSERT_NE(new_plugin_handle3->wasm(), new_plugin_handle2->wasm());
 
@@ -222,7 +222,7 @@ TEST_P(TestVm, RecoverCrashedThreadLocalWasm) {
   ASSERT_TRUE(another_handle2->wasm()->isFailed());
   // Do recover again
   std::shared_ptr<PluginHandleBase> new_another_handle2;
-  ASSERT_TRUE(another_handle2->doRecover(new_another_handle2));
+  ASSERT_TRUE(another_handle2->rebuild(new_another_handle2));
   // Verify the pointer to WasmBase is different from the crashed one.
   ASSERT_NE(new_another_handle2->wasm(), another_handle2->wasm());
 
@@ -238,7 +238,7 @@ TEST_P(TestVm, RecoverCrashedThreadLocalWasm) {
   ASSERT_NE(another_handle3->wasm(), new_another_handle2->wasm());
   // Do recover again.
   std::shared_ptr<PluginHandleBase> new_another_handle3;
-  ASSERT_TRUE(new_another_handle2->doRecover(new_another_handle3));
+  ASSERT_TRUE(new_another_handle2->rebuild(new_another_handle3));
   // Recover should reuse the plugin handle
   ASSERT_EQ(new_another_handle3, another_handle3);
 }

@@ -252,6 +252,7 @@ WasmBase::WasmBase(std::unique_ptr<WasmVm> wasm_vm, std::string_view vm_id,
 }
 
 WasmBase::~WasmBase() {
+  clearWasmInContext();
   root_contexts_.clear();
   pending_done_.clear();
   pending_delete_.clear();
@@ -400,54 +401,54 @@ ContextBase *WasmBase::getRootContext(const std::shared_ptr<PluginBase> &plugin,
 void WasmBase::startVm(ContextBase *root_context) {
   // wasi_snapshot_preview1.clock_time_get
   wasm_vm_->setRestrictedCallback(
-      true, {// logging (Proxy-Wasm)
-             "env.proxy_log",
-             // logging (stdout/stderr)
-             "wasi_unstable.fd_write", "wasi_snapshot_preview1.fd_write",
-             // args
-             "wasi_unstable.args_sizes_get", "wasi_snapshot_preview1.args_sizes_get",
-             "wasi_unstable.args_get", "wasi_snapshot_preview1.args_get",
-             // environment variables
-             "wasi_unstable.environ_sizes_get", "wasi_snapshot_preview1.environ_sizes_get",
-             "wasi_unstable.environ_get", "wasi_snapshot_preview1.environ_get",
-             // preopened files/directories
-             "wasi_unstable.fd_prestat_get", "wasi_snapshot_preview1.fd_prestat_get",
-             "wasi_unstable.fd_prestat_dir_name", "wasi_snapshot_preview1.fd_prestat_dir_name",
-             // time
-             "wasi_unstable.clock_time_get", "wasi_snapshot_preview1.clock_time_get",
-             "wasi_unstable.clock_res_get", "wasi_snapshot_preview1.clock_res_get",
-             // random
-             "wasi_unstable.random_get", "wasi_snapshot_preview1.random_get",
-             // Go runtime initialization
-             "wasi_unstable.fd_fdstat_get", "wasi_snapshot_preview1.fd_fdstat_get",
-             "wasi_unstable.fd_fdstat_set_flags", "wasi_snapshot_preview1.fd_fdstat_set_flags",
-             "wasi_unstable.fd_fdstat_set_rights", "wasi_snapshot_preview1.fd_fdstat_set_rights",
-             "wasi_unstable.path_filestat_get", "wasi_snapshot_preview1.path_filestat_get",
-             "wasi_unstable.fd_filestat_get", "wasi_snapshot_preview1.fd_filestat_get",
-             "wasi_unstable.fd_filestat_set_size", "wasi_snapshot_preview1.fd_filestat_set_size",
-             "wasi_unstable.fd_filestat_set_times", "wasi_snapshot_preview1.fd_filestat_set_times",
-             "wasi_unstable.fd_advise", "wasi_snapshot_preview1.fd_advise",
-             "wasi_unstable.fd_allocate", "wasi_snapshot_preview1.fd_allocate",
-             "wasi_unstable.fd_datasync", "wasi_snapshot_preview1.fd_datasync",
-             "wasi_unstable.fd_pread", "wasi_snapshot_preview1.fd_pread",
-             "wasi_unstable.fd_pwrite", "wasi_snapshot_preview1.fd_pwrite",
-             "wasi_unstable.fd_readdir", "wasi_snapshot_preview1.fd_readdir",
-             "wasi_unstable.fd_renumber", "wasi_snapshot_preview1.fd_renumber",
-             "wasi_unstable.fd_sync", "wasi_snapshot_preview1.fd_sync",
-             "wasi_unstable.fd_tell", "wasi_snapshot_preview1.fd_tell",
-             "wasi_unstable.path_create_directory", "wasi_snapshot_preview1.path_create_directory",
-             "wasi_unstable.path_filestat_set_times", "wasi_snapshot_preview1.path_filestat_set_times",
-             "wasi_unstable.path_link", "wasi_snapshot_preview1.path_link",
-             "wasi_unstable.path_readlink", "wasi_snapshot_preview1.path_readlink",
-             "wasi_unstable.path_remove_directory", "wasi_snapshot_preview1.path_remove_directory",
-             "wasi_unstable.path_rename", "wasi_snapshot_preview1.path_rename",
-             "wasi_unstable.path_symlink", "wasi_snapshot_preview1.path_symlink",
-             "wasi_unstable.path_unlink_file", "wasi_snapshot_preview1.path_unlink_file",
-             "wasi_unstable.poll_oneoff", "wasi_snapshot_preview1.poll_oneoff",
-             "wasi_unstable.sock_accept", "wasi_snapshot_preview1.sock_accept",
-             "wasi_unstable.sock_recv", "wasi_snapshot_preview1.sock_recv",
-             "wasi_unstable.sock_send", "wasi_snapshot_preview1.sock_send",
-             "wasi_unstable.sock_shutdown", "wasi_snapshot_preview1.sock_shutdown"});
+      true,
+      {// logging (Proxy-Wasm)
+       "env.proxy_log",
+       // logging (stdout/stderr)
+       "wasi_unstable.fd_write", "wasi_snapshot_preview1.fd_write",
+       // args
+       "wasi_unstable.args_sizes_get", "wasi_snapshot_preview1.args_sizes_get",
+       "wasi_unstable.args_get", "wasi_snapshot_preview1.args_get",
+       // environment variables
+       "wasi_unstable.environ_sizes_get", "wasi_snapshot_preview1.environ_sizes_get",
+       "wasi_unstable.environ_get", "wasi_snapshot_preview1.environ_get",
+       // preopened files/directories
+       "wasi_unstable.fd_prestat_get", "wasi_snapshot_preview1.fd_prestat_get",
+       "wasi_unstable.fd_prestat_dir_name", "wasi_snapshot_preview1.fd_prestat_dir_name",
+       // time
+       "wasi_unstable.clock_time_get", "wasi_snapshot_preview1.clock_time_get",
+       "wasi_unstable.clock_res_get", "wasi_snapshot_preview1.clock_res_get",
+       // random
+       "wasi_unstable.random_get", "wasi_snapshot_preview1.random_get",
+       // Go runtime initialization
+       "wasi_unstable.fd_fdstat_get", "wasi_snapshot_preview1.fd_fdstat_get",
+       "wasi_unstable.fd_fdstat_set_flags", "wasi_snapshot_preview1.fd_fdstat_set_flags",
+       "wasi_unstable.fd_fdstat_set_rights", "wasi_snapshot_preview1.fd_fdstat_set_rights",
+       "wasi_unstable.path_filestat_get", "wasi_snapshot_preview1.path_filestat_get",
+       "wasi_unstable.fd_filestat_get", "wasi_snapshot_preview1.fd_filestat_get",
+       "wasi_unstable.fd_filestat_set_size", "wasi_snapshot_preview1.fd_filestat_set_size",
+       "wasi_unstable.fd_filestat_set_times", "wasi_snapshot_preview1.fd_filestat_set_times",
+       "wasi_unstable.fd_advise", "wasi_snapshot_preview1.fd_advise", "wasi_unstable.fd_allocate",
+       "wasi_snapshot_preview1.fd_allocate", "wasi_unstable.fd_datasync",
+       "wasi_snapshot_preview1.fd_datasync", "wasi_unstable.fd_pread",
+       "wasi_snapshot_preview1.fd_pread", "wasi_unstable.fd_pwrite",
+       "wasi_snapshot_preview1.fd_pwrite", "wasi_unstable.fd_readdir",
+       "wasi_snapshot_preview1.fd_readdir", "wasi_unstable.fd_renumber",
+       "wasi_snapshot_preview1.fd_renumber", "wasi_unstable.fd_sync",
+       "wasi_snapshot_preview1.fd_sync", "wasi_unstable.fd_tell", "wasi_snapshot_preview1.fd_tell",
+       "wasi_unstable.path_create_directory", "wasi_snapshot_preview1.path_create_directory",
+       "wasi_unstable.path_filestat_set_times", "wasi_snapshot_preview1.path_filestat_set_times",
+       "wasi_unstable.path_link", "wasi_snapshot_preview1.path_link", "wasi_unstable.path_readlink",
+       "wasi_snapshot_preview1.path_readlink", "wasi_unstable.path_remove_directory",
+       "wasi_snapshot_preview1.path_remove_directory", "wasi_unstable.path_rename",
+       "wasi_snapshot_preview1.path_rename", "wasi_unstable.path_symlink",
+       "wasi_snapshot_preview1.path_symlink", "wasi_unstable.path_unlink_file",
+       "wasi_snapshot_preview1.path_unlink_file", "wasi_unstable.poll_oneoff",
+       "wasi_snapshot_preview1.poll_oneoff", "wasi_unstable.sock_accept",
+       "wasi_snapshot_preview1.sock_accept", "wasi_unstable.sock_recv",
+       "wasi_snapshot_preview1.sock_recv", "wasi_unstable.sock_send",
+       "wasi_snapshot_preview1.sock_send", "wasi_unstable.sock_shutdown",
+       "wasi_snapshot_preview1.sock_shutdown"});
   if (_initialize_) {
     // WASI reactor.
     _initialize_(root_context);
@@ -655,35 +656,42 @@ void setWasmRecoverCallback(const std::string &vm_key,
                                      clone_factory]() -> std::shared_ptr<WasmHandleBase> {
     const auto base_handle = base_handle_for_copy.lock();
     if (!base_handle) {
-      std::cerr << "Failed to get base_handle shared_ptr in setRecoverVmCallback" << std::endl;
+      std::cerr << "Failed to get base_handle shared_ptr in setRecoverVmCallback"
+                << "\n";
       return nullptr;
     }
     const auto &integration = base_handle->wasm()->wasm_vm()->integration();
     integration->trace("Start recover wasm_handle");
+
+    // Check if this is a proactive rebuild (shouldRebuild flag is set)
+    auto old_wasm_handle = wasm_handle_for_copy.lock();
+    bool is_proactive_rebuild = (old_wasm_handle && old_wasm_handle->wasm()->shouldRebuild());
+
     auto it = local_wasms.find(vm_key);
     if (it != local_wasms.end()) {
       auto wasm_handle = it->second.lock();
-      if (wasm_handle) {
-        integration->trace("Wasm handle already exists");
+      if (wasm_handle && !is_proactive_rebuild) {
+        integration->trace("Wasm handle already exists, reuse for fail recovery");
         return wasm_handle;
       }
+      // For proactive rebuild, force erase the cache to create new instance
+      integration->trace("Proactive rebuild: erase existing cache");
       local_wasms.erase(vm_key);
     }
     removeStaleLocalCacheEntries(local_wasms, local_wasms_keys);
-    auto old_wasm_handle = wasm_handle_for_copy.lock();
-    if (old_wasm_handle) {
-      // avoid the context use the stale wasm ptr
-      old_wasm_handle->wasm()->clearWasmInContext();
-    }
     // Try to recover wasm vm
     auto new_handle = clone_factory(base_handle);
     if (!new_handle) {
+      std::cerr << "Failed to clone Base Wasm during recover"
+                << "\n";
       base_handle->wasm()->fail(FailState::RecoverError,
                                 "Failed to clone Base Wasm during recover");
       return nullptr;
     }
 
     if (!new_handle->wasm()->initialize()) {
+      std::cerr << "Failed to initialize Wasm code during recover"
+                << "\n";
       base_handle->wasm()->fail(FailState::RecoverError,
                                 "Failed to initialize Wasm code during recover");
       return nullptr;
@@ -752,7 +760,7 @@ void setPluginRecoverCallback(const std::string &key,
         const auto base_handle = base_handle_for_copy.lock();
         if (!base_handle) {
           std::cerr << "Failed to get base_handle shared_ptr in setRecoverPluginCallback"
-                    << std::endl;
+                    << "\n";
           return nullptr;
         }
         const auto &integration = base_handle->wasm()->wasm_vm()->integration();
@@ -760,20 +768,31 @@ void setPluginRecoverCallback(const std::string &key,
         auto it = local_plugins.find(key);
         if (it != local_plugins.end()) {
           auto plugin_handle = it->second.lock();
-          if (plugin_handle) {
+          // Check if the associated wasm needs rebuild
+          bool should_rebuild = (plugin_handle && plugin_handle->wasmHandle() &&
+                                 plugin_handle->wasmHandle()->wasm() &&
+                                 plugin_handle->wasmHandle()->wasm()->shouldRebuild());
+          if (plugin_handle && !should_rebuild) {
+            integration->trace("Plugin handle already exists, reuse for fail recovery");
             return plugin_handle;
           }
+          // For proactive rebuild, force erase the cache to create new instance
+          integration->trace("Proactive rebuild: erase existing plugin cache");
           local_plugins.erase(key);
         }
         removeStaleLocalCacheEntries(local_plugins, local_plugins_keys);
         // Try to recover wasm plugin
         auto *plugin_context = wasm_handle->wasm()->start(plugin);
         if (plugin_context == nullptr) {
+          std::cerr << "Failed to start thread-local Wasm during recover"
+                    << "\n";
           base_handle->wasm()->fail(FailState::RecoverError,
                                     "Failed to start thread-local Wasm during recover");
           return nullptr;
         }
         if (!wasm_handle->wasm()->configure(plugin_context, plugin)) {
+          std::cerr << "Failed to configure thread-local Wasm plugin during recover"
+                    << "\n";
           base_handle->wasm()->fail(FailState::RecoverError,
                                     "Failed to configure thread-local Wasm plugin during recover");
           return nullptr;

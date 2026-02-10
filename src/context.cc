@@ -511,11 +511,13 @@ FilterHeadersStatus ContextBase::convertVmCallResultToFilterHeadersStatus(uint64
     return FilterHeadersStatus::StopAllIterationAndWatermark;
   }
   if (result == static_cast<uint64_t>(FilterHeadersStatus::StopIteration) &&
-      !allow_on_headers_stop_iteration_) {
+      !allow_on_headers_stop_iteration_ && !wasm_->on_request_headers_abi_03_) {
     // Default behavior for Proxy-Wasm 0.2.* ABI is to translate StopIteration
     // (pause processing headers, but continue processing body) to
     // StopAllIterationAndWatermark (pause all processing), as described in
     // https://github.com/proxy-wasm/proxy-wasm-cpp-host/issues/143.
+    // Note: ABI 0.2.100 (on_request_headers_abi_03_) is excluded because it
+    // supports StopIteration natively for body buffering workflows.
     return FilterHeadersStatus::StopAllIterationAndWatermark;
   }
   return static_cast<FilterHeadersStatus>(result);

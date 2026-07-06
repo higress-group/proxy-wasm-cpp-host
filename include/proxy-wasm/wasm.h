@@ -160,9 +160,14 @@ public:
     // NB: this may be deleted by a delayed function unless prevented.
     if (!after_vm_call_actions_.empty()) {
       auto self = shared_from_this();
-      while (!self->after_vm_call_actions_.empty()) {
-        auto f = std::move(self->after_vm_call_actions_.front());
-        self->after_vm_call_actions_.pop_front();
+      // Swap the queue into a local before draining so that actions re-added by a
+      // callback during the drain land in the (now-empty) member queue and are picked
+      // up by the next-outer DeferAfterCallActions frame, instead of being re-run in
+      // this same loop (which would spin forever under synchronous reentry — see
+      // higress-group/higress#4034).
+      std::deque<std::function<void()>> local;
+      local.swap(self->after_vm_call_actions_);
+      for (auto &f : local) {
         f();
       }
     }

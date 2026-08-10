@@ -748,18 +748,22 @@ getOrCreateThreadLocalWasmWithResult(const std::shared_ptr<WasmHandleBase> &base
   // Create and initialize new thread-local WasmVM.
   auto wasm_handle = clone_factory(base_handle);
   if (!wasm_handle) {
-    base_handle->wasm()->fail(FailState::UnableToCloneVm, "Failed to clone Base Wasm");
     return {nullptr, FailState::UnableToCloneVm};
   }
 
   if (!wasm_handle->wasm()) {
-    base_handle->wasm()->fail(FailState::UnableToInitializeCode, "Failed to initialize Wasm code");
     return {nullptr, FailState::UnableToCreateVm};
   }
   auto failure = failStateOr(wasm_handle, FailState::Ok);
-  if (failure != FailState::Ok || !wasm_handle->wasm()->initialize()) {
-    failure = failStateOr(wasm_handle, FailState::UnableToInitializeCode);
-    base_handle->wasm()->fail(FailState::UnableToInitializeCode, "Failed to initialize Wasm code");
+  if (failure != FailState::Ok) {
+    return {nullptr, failure};
+  }
+  if (!wasm_handle->wasm()->initialize()) {
+    failure = failStateOr(wasm_handle, FailState::Ok);
+    if (failure == FailState::Ok) {
+      failure = FailState::UnableToInitializeCode;
+      failThreadLocalWasm(wasm_handle, failure, "Failed to initialize Wasm code");
+    }
     return {nullptr, failure};
   }
   cacheLocalWasm(vm_key, wasm_handle);

@@ -31,7 +31,15 @@ INSTANTIATE_TEST_SUITE_P(WasmEngines, TestVm, testing::ValuesIn(getWasmEngines()
 
 namespace {
 
-enum class CloneResult { Normal, ReturnNull, Uninitializable, InitializeFailure };
+enum class CloneResult {
+  Normal,
+  ReturnNull,
+  NullWasm,
+  Uninitializable,
+  InitializeFailure,
+  InitializeFailureWithoutState,
+  InitializeRuntimeError,
+};
 
 struct ControlledFailureState {
   bool fail_start = false;
@@ -39,6 +47,53 @@ struct ControlledFailureState {
   bool trap_start = false;
   bool trap_configure = false;
   CloneResult clone_result = CloneResult::Normal;
+};
+
+class FailingLinkVm : public WasmVm {
+public:
+  explicit FailingLinkVm(FailState fail_state) : fail_state_(fail_state) {}
+
+  std::string_view getEngineName() override { return "failing-link"; }
+  Cloneable cloneable() override { return Cloneable::NotCloneable; }
+  std::unique_ptr<WasmVm> clone() override { return nullptr; }
+  bool load(std::string_view /*bytecode*/, std::string_view /*precompiled*/,
+            const std::unordered_map<uint32_t, std::string> & /*function_names*/) override {
+    return true;
+  }
+  bool link(std::string_view /*debug_name*/) override {
+    if (fail_state_ != FailState::Ok) {
+      fail(fail_state_, "injected link failure");
+    }
+    return false;
+  }
+  uint64_t getMemorySize() override { return 0; }
+  std::optional<std::string_view> getMemory(uint64_t /*pointer*/, uint64_t /*size*/) override {
+    return std::nullopt;
+  }
+  bool setMemory(uint64_t /*pointer*/, uint64_t /*size*/, const void * /*data*/) override {
+    return false;
+  }
+  bool setWord(uint64_t /*pointer*/, Word /*data*/) override { return false; }
+  bool getWord(uint64_t /*pointer*/, Word * /*data*/) override { return false; }
+  size_t getWordSize() override { return sizeof(uint64_t); }
+  std::string_view getPrecompiledSectionName() override { return {}; }
+
+#define _GET_FUNCTION(_T)                                                                          \
+  void getFunction(std::string_view /*function_name*/, _T *f) override { *f = nullptr; }
+  FOR_ALL_WASM_VM_EXPORTS(_GET_FUNCTION)
+#undef _GET_FUNCTION
+
+#define _REGISTER_CALLBACK(_T)                                                                     \
+  void registerCallback(std::string_view /*module_name*/, std::string_view /*function_name*/, _T,  \
+                        typename ConvertFunctionTypeWordToUint32<_T>::type) override {}
+  FOR_ALL_WASM_VM_IMPORTS(_REGISTER_CALLBACK)
+#undef _REGISTER_CALLBACK
+
+  void terminate() override {}
+  bool usesWasmByteOrder() override { return false; }
+
+private:
+  FailState fail_state_;
 };
 
 class ControlledContext : public TestContext {
@@ -119,11 +174,23 @@ makeControlledCloneFactory(const std::function<std::unique_ptr<WasmVm>()> &new_v
     }
 
     std::shared_ptr<WasmBase> wasm;
-    if (state->clone_result == CloneResult::Uninitializable) {
+    if (state->clone_result == CloneResult::NullWasm) {
+      wasm = nullptr;
+    } else if (state->clone_result == CloneResult::Uninitializable) {
       wasm = std::make_shared<WasmBase>(
           std::unique_ptr<WasmVm>{}, base_wasm_handle->wasm()->vm_id(),
           base_wasm_handle->wasm()->vm_configuration(), base_wasm_handle->wasm()->vm_key(),
           std::unordered_map<std::string, std::string>{}, AllowedCapabilitiesMap{});
+    } else if (state->clone_result == CloneResult::InitializeFailureWithoutState ||
+               state->clone_result == CloneResult::InitializeRuntimeError) {
+      const auto fail_state = state->clone_result == CloneResult::InitializeRuntimeError
+                                  ? FailState::RuntimeError
+                                  : FailState::Ok;
+      auto failing_vm = std::make_unique<FailingLinkVm>(fail_state);
+      failing_vm->integration() = std::make_unique<TestIntegration>();
+      wasm = std::make_shared<ControlledWasm>(
+          std::move(failing_vm), base_wasm_handle->wasm()->vm_id(),
+          base_wasm_handle->wasm()->vm_configuration(), base_wasm_handle->wasm()->vm_key(), state);
     } else {
       wasm = std::make_shared<ControlledWasm>(base_wasm_handle, new_vm, state);
       if (state->clone_result == CloneResult::InitializeFailure) {
@@ -410,35 +477,75 @@ TEST_P(TestVm, RecoverFailuresBelongToNewCloneAndCallbacksStayBalanced) {
   clearWasmCachesForTesting();
 }
 
-TEST_P(TestVm, NormalCloneFailuresKeepBaseFailureSemantics) {
+TEST_P(TestVm, WorkerCloneAndInitializeFailuresDoNotContaminateBase) {
   clearWasmCachesForTesting();
   const auto state = std::make_shared<ControlledFailureState>();
   const auto new_vm = [this]() { return makeVm(engine_); };
-  const auto clone_factory = makeControlledCloneFactory(new_vm, state);
+  std::shared_ptr<WasmHandleBase> last_clone;
+  const auto clone_factory = makeControlledCloneFactory(new_vm, state, &last_clone);
   const auto plugin_factory = makePluginHandleFactory();
   const auto plugin = std::make_shared<PluginBase>("plugin_name", "root_id", "vm_id", engine_,
                                                    "plugin_config", false, "plugin_key");
   const auto wasm_factory = makeControlledWasmFactory(new_vm, state, "vm_id", "vm_config");
+  const auto source = readTestWasmFile("abi_export.wasm");
 
-  auto clone_failure_base =
-      createWasm("normal-clone-failure-vm-key", readTestWasmFile("abi_export.wasm"), plugin,
-                 wasm_factory, clone_factory, false);
-  ASSERT_TRUE(clone_failure_base && clone_failure_base->wasm());
-  state->clone_result = CloneResult::ReturnNull;
-  EXPECT_EQ(getOrCreateThreadLocalPlugin(clone_failure_base, plugin, clone_factory, plugin_factory),
-            nullptr);
-  EXPECT_EQ(clone_failure_base->wasm()->fail_state(), FailState::UnableToCloneVm);
+  struct FailureCase {
+    const char *name;
+    CloneResult clone_result;
+    FailState expected;
+  };
+  const FailureCase cases[] = {
+      {"clone-null", CloneResult::ReturnNull, FailState::UnableToCloneVm},
+      {"wasm-null", CloneResult::NullWasm, FailState::UnableToCreateVm},
+      {"construction-failure", CloneResult::Uninitializable, FailState::UnableToCreateVm},
+      {"initialize-failure-without-state", CloneResult::InitializeFailureWithoutState,
+       FailState::UnableToInitializeCode},
+      {"initialize-runtime-error", CloneResult::InitializeRuntimeError, FailState::RuntimeError},
+  };
 
-  state->clone_result = CloneResult::Normal;
-  auto initialize_failure_base =
-      createWasm("normal-initialize-failure-vm-key", readTestWasmFile("abi_export.wasm"), plugin,
-                 wasm_factory, clone_factory, false);
-  ASSERT_TRUE(initialize_failure_base && initialize_failure_base->wasm());
-  state->clone_result = CloneResult::Uninitializable;
-  EXPECT_EQ(
-      getOrCreateThreadLocalPlugin(initialize_failure_base, plugin, clone_factory, plugin_factory),
-      nullptr);
-  EXPECT_EQ(initialize_failure_base->wasm()->fail_state(), FailState::UnableToInitializeCode);
+  for (const auto &test_case : cases) {
+    *state = ControlledFailureState{};
+    const std::string vm_key = std::string("worker-failure-isolation-") + test_case.name;
+    auto base_handle = createWasm(vm_key, source, plugin, wasm_factory, clone_factory, false);
+    ASSERT_TRUE(base_handle && base_handle->wasm()) << test_case.name;
+    last_clone.reset();
+    state->clone_result = test_case.clone_result;
+
+    const auto failed =
+        getOrCreateThreadLocalPluginWithResult(base_handle, plugin, clone_factory, plugin_factory);
+    EXPECT_EQ(failed.handle, nullptr) << test_case.name;
+    EXPECT_EQ(failed.fail_state, test_case.expected) << test_case.name;
+    EXPECT_EQ(base_handle->wasm()->fail_state(), FailState::Ok) << test_case.name;
+    EXPECT_FALSE(base_handle->wasm()->isFailed()) << test_case.name;
+    EXPECT_EQ(getThreadLocalWasm(vm_key), nullptr) << test_case.name;
+
+    const auto failed_clone = last_clone;
+    if (test_case.clone_result == CloneResult::ReturnNull) {
+      EXPECT_EQ(failed_clone, nullptr) << test_case.name;
+    } else if (test_case.clone_result == CloneResult::NullWasm) {
+      ASSERT_TRUE(failed_clone) << test_case.name;
+      EXPECT_EQ(failed_clone->wasm(), nullptr) << test_case.name;
+    } else {
+      ASSERT_TRUE(failed_clone && failed_clone->wasm()) << test_case.name;
+      EXPECT_EQ(failed_clone->wasm()->fail_state(), test_case.expected) << test_case.name;
+    }
+
+    state->clone_result = CloneResult::Normal;
+    auto reused_base = createWasm(vm_key, source, plugin, wasm_factory, clone_factory, false);
+    ASSERT_TRUE(reused_base && reused_base->wasm()) << test_case.name;
+    EXPECT_EQ(reused_base, base_handle) << test_case.name;
+    EXPECT_EQ(reused_base->wasm()->fail_state(), FailState::Ok) << test_case.name;
+    EXPECT_FALSE(reused_base->wasm()->isFailed()) << test_case.name;
+
+    const auto recovered =
+        getOrCreateThreadLocalPluginWithResult(reused_base, plugin, clone_factory, plugin_factory);
+    ASSERT_TRUE(recovered.handle && recovered.handle->wasm()) << test_case.name;
+    EXPECT_EQ(recovered.fail_state, FailState::Ok) << test_case.name;
+    EXPECT_EQ(getThreadLocalWasm(vm_key), recovered.handle->wasmHandle()) << test_case.name;
+    if (failed_clone) {
+      EXPECT_NE(recovered.handle->wasmHandle(), failed_clone) << test_case.name;
+    }
+  }
   clearWasmCachesForTesting();
 }
 
@@ -518,10 +625,16 @@ TEST_P(TestVm, ThreadLocalPluginResultPreservesFailureReason) {
   const FailureCase cases[] = {
       {"result-clone-null", CloneResult::ReturnNull, false, false, false, false,
        FailState::UnableToCloneVm},
+      {"result-wasm-null", CloneResult::NullWasm, false, false, false, false,
+       FailState::UnableToCreateVm},
       {"result-construction-failure", CloneResult::Uninitializable, false, false, false, false,
        FailState::UnableToCreateVm},
       {"result-initialize-failure", CloneResult::InitializeFailure, false, false, false, false,
        FailState::UnableToInitializeCode},
+      {"result-initialize-fallback", CloneResult::InitializeFailureWithoutState, false, false,
+       false, false, FailState::UnableToInitializeCode},
+      {"result-initialize-runtime-error", CloneResult::InitializeRuntimeError, false, false, false,
+       false, FailState::RuntimeError},
       {"result-start-rejected", CloneResult::Normal, true, false, false, false,
        FailState::StartFailed},
       {"result-configure-rejected", CloneResult::Normal, false, true, false, false,
@@ -550,7 +663,14 @@ TEST_P(TestVm, ThreadLocalPluginResultPreservesFailureReason) {
     EXPECT_EQ(result.fail_state, test_case.expected) << test_case.vm_key;
     EXPECT_NE(result.fail_state, FailState::Ok) << test_case.vm_key;
     EXPECT_EQ(getThreadLocalWasm(test_case.vm_key), nullptr) << test_case.vm_key;
-    if (test_case.clone_result != CloneResult::ReturnNull) {
+    EXPECT_EQ(base_handle->wasm()->fail_state(), FailState::Ok) << test_case.vm_key;
+    EXPECT_FALSE(base_handle->wasm()->isFailed()) << test_case.vm_key;
+    if (test_case.clone_result == CloneResult::ReturnNull) {
+      EXPECT_EQ(last_clone, nullptr) << test_case.vm_key;
+    } else if (test_case.clone_result == CloneResult::NullWasm) {
+      ASSERT_TRUE(last_clone) << test_case.vm_key;
+      EXPECT_EQ(last_clone->wasm(), nullptr) << test_case.vm_key;
+    } else {
       ASSERT_TRUE(last_clone && last_clone->wasm()) << test_case.vm_key;
       EXPECT_EQ(last_clone->wasm()->fail_state(), test_case.expected) << test_case.vm_key;
     }

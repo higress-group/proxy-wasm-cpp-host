@@ -407,10 +407,12 @@ public:
                             std::shared_ptr<PluginBase> plugin)
       : plugin_(plugin), wasm_handle_(wasm_handle) {}
   ~PluginHandleBase() {
-    if (wasm_handle_) {
-      wasm_handle_->wasm()->startShutdown(plugin_->key());
-      wasm_handle_->wasm()->wasm_vm()->removeFailCallback(plugin_handle_key_);
+    auto wasm = wasm_handle_ ? wasm_handle_->wasm() : nullptr;
+    if (!wasm) {
+      return;
     }
+    wasm->startShutdown(plugin_->key());
+    wasm->wasm_vm()->removeFailCallback(plugin_handle_key_);
   }
 
   std::shared_ptr<PluginBase> &plugin() { return plugin_; }
@@ -458,6 +460,15 @@ private:
 
 using PluginHandleFactory = std::function<std::shared_ptr<PluginHandleBase>(
     std::shared_ptr<WasmHandleBase> base_wasm, std::shared_ptr<PluginBase> plugin)>;
+
+struct ThreadLocalPluginResult {
+  std::shared_ptr<PluginHandleBase> handle;
+  FailState fail_state{FailState::Ok};
+};
+
+ThreadLocalPluginResult getOrCreateThreadLocalPluginWithResult(
+    const std::shared_ptr<WasmHandleBase> &base_handle, const std::shared_ptr<PluginBase> &plugin,
+    const WasmHandleCloneFactory &clone_factory, const PluginHandleFactory &plugin_factory);
 
 // Get an existing ThreadLocal VM matching 'vm_id' or create one using 'base_wavm' by cloning or by
 // using it it as a template.

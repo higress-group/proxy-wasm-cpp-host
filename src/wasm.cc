@@ -634,16 +634,45 @@ std::shared_ptr<WasmHandleBase> getThreadLocalWasm(std::string_view vm_key) {
   return nullptr;
 }
 
+namespace {
+
+struct ThreadLocalWasmResult {
+  std::shared_ptr<WasmHandleBase> handle;
+  FailState fail_state{FailState::Ok};
+};
+
+FailState failStateOr(const std::shared_ptr<WasmHandleBase> &wasm_handle, FailState fallback) {
+  const auto wasm = wasm_handle ? wasm_handle->wasm() : nullptr;
+  return wasm && wasm->fail_state() != FailState::Ok ? wasm->fail_state() : fallback;
+}
+
+void failThreadLocalWasm(const std::shared_ptr<WasmHandleBase> &wasm_handle, FailState fail_state,
+                         std::string_view message) {
+  const auto wasm = wasm_handle->wasm();
+  if (wasm->wasm_vm()) {
+    wasm->wasm_vm()->fail(fail_state, message);
+  } else {
+    wasm->fail(fail_state, message);
+  }
+}
+
+} // namespace
+
 void setWasmFailCallback(const std::string &vm_key,
                          const std::shared_ptr<WasmHandleBase> &wasm_handle) {
-  wasm_handle->wasm()->wasm_vm()->addFailCallback([vm_key](proxy_wasm::FailState fail_state) {
-    if (fail_state == proxy_wasm::FailState::RuntimeError) {
-      // If VM failed, erase the entry so that:
-      // 1) we can recreate the new thread local VM from the same base_wasm.
-      // 2) we wouldn't reuse the failed VM for new plugins accidentally.
-      local_wasms.erase(vm_key);
-    }
-  });
+  std::weak_ptr<WasmHandleBase> expected_handle = wasm_handle;
+  wasm_handle->wasm()->wasm_vm()->addFailCallback(
+      [vm_key, expected_handle](proxy_wasm::FailState fail_state) {
+        if (fail_state == proxy_wasm::FailState::Ok) {
+          return;
+        }
+        const auto expected = expected_handle.lock();
+        const auto it = local_wasms.find(vm_key);
+        if (expected && it != local_wasms.end() && it->second.lock() == expected) {
+          // A delayed callback from an older generation must not evict its replacement.
+          local_wasms.erase(it);
+        }
+      });
 }
 
 void setWasmRecoverCallback(const std::string &vm_key,
@@ -684,16 +713,14 @@ void setWasmRecoverCallback(const std::string &vm_key,
     if (!new_handle) {
       std::cerr << "Failed to clone Base Wasm during recover"
                 << "\n";
-      base_handle->wasm()->fail(FailState::RecoverError,
-                                "Failed to clone Base Wasm during recover");
       return nullptr;
     }
 
     if (!new_handle->wasm()->initialize()) {
       std::cerr << "Failed to initialize Wasm code during recover"
                 << "\n";
-      base_handle->wasm()->fail(FailState::RecoverError,
-                                "Failed to initialize Wasm code during recover");
+      failThreadLocalWasm(new_handle, FailState::RecoverError,
+                          "Failed to initialize Wasm code during recover");
       return nullptr;
     }
     cacheLocalWasm(vm_key, new_handle);
@@ -704,16 +731,16 @@ void setWasmRecoverCallback(const std::string &vm_key,
   });
 }
 
-static std::shared_ptr<WasmHandleBase>
-getOrCreateThreadLocalWasm(const std::shared_ptr<WasmHandleBase> &base_handle,
-                           const WasmHandleCloneFactory &clone_factory) {
+static ThreadLocalWasmResult
+getOrCreateThreadLocalWasmWithResult(const std::shared_ptr<WasmHandleBase> &base_handle,
+                                     const WasmHandleCloneFactory &clone_factory) {
   std::string vm_key(base_handle->wasm()->vm_key());
   // Get existing thread-local WasmVM.
   auto it = local_wasms.find(vm_key);
   if (it != local_wasms.end()) {
     auto wasm_handle = it->second.lock();
     if (wasm_handle) {
-      return wasm_handle;
+      return {wasm_handle, FailState::Ok};
     }
     local_wasms.erase(it);
   }
@@ -721,30 +748,48 @@ getOrCreateThreadLocalWasm(const std::shared_ptr<WasmHandleBase> &base_handle,
   // Create and initialize new thread-local WasmVM.
   auto wasm_handle = clone_factory(base_handle);
   if (!wasm_handle) {
-    base_handle->wasm()->fail(FailState::UnableToCloneVm, "Failed to clone Base Wasm");
-    return nullptr;
+    return {nullptr, FailState::UnableToCloneVm};
   }
 
+  if (!wasm_handle->wasm()) {
+    return {nullptr, FailState::UnableToCreateVm};
+  }
+  auto failure = failStateOr(wasm_handle, FailState::Ok);
+  if (failure != FailState::Ok) {
+    return {nullptr, failure};
+  }
   if (!wasm_handle->wasm()->initialize()) {
-    base_handle->wasm()->fail(FailState::UnableToInitializeCode, "Failed to initialize Wasm code");
-    return nullptr;
+    failure = failStateOr(wasm_handle, FailState::Ok);
+    if (failure == FailState::Ok) {
+      failure = FailState::UnableToInitializeCode;
+      failThreadLocalWasm(wasm_handle, failure, "Failed to initialize Wasm code");
+    }
+    return {nullptr, failure};
   }
   cacheLocalWasm(vm_key, wasm_handle);
   setWasmFailCallback(vm_key, wasm_handle);
   setWasmRecoverCallback(vm_key, wasm_handle, base_handle, clone_factory);
-  return wasm_handle;
+  return {wasm_handle, FailState::Ok};
 }
 
 void setPluginFailCallback(const std::string &key,
                            const std::shared_ptr<WasmHandleBase> &wasm_handle) {
-  wasm_handle->wasm()->wasm_vm()->addFailCallback(key, [key](proxy_wasm::FailState fail_state) {
-    if (fail_state == proxy_wasm::FailState::RuntimeError) {
-      // If VM failed, erase the entry so that:
-      // 1) we can recreate the new thread local plugin from the same base_wasm.
-      // 2) we wouldn't reuse the failed VM for new plugin configs accidentally.
-      local_plugins.erase(key);
-    }
-  });
+  std::weak_ptr<WasmHandleBase> expected_handle = wasm_handle;
+  wasm_handle->wasm()->wasm_vm()->addFailCallback(
+      key, [key, expected_handle](proxy_wasm::FailState fail_state) {
+        if (fail_state == proxy_wasm::FailState::Ok) {
+          return;
+        }
+        const auto expected = expected_handle.lock();
+        const auto it = local_plugins.find(key);
+        if (expected && it != local_plugins.end()) {
+          const auto current = it->second.lock();
+          if (current && current->wasmHandle() == expected) {
+            // A delayed callback from an older generation must not evict its replacement.
+            local_plugins.erase(it);
+          }
+        }
+      });
 }
 
 void setPluginRecoverCallback(const std::string &key,
@@ -786,19 +831,20 @@ void setPluginRecoverCallback(const std::string &key,
         if (plugin_context == nullptr) {
           std::cerr << "Failed to start thread-local Wasm during recover"
                     << "\n";
-          base_handle->wasm()->fail(FailState::RecoverError,
-                                    "Failed to start thread-local Wasm during recover");
+          failThreadLocalWasm(wasm_handle, FailState::RecoverError,
+                              "Failed to start thread-local Wasm during recover");
           return nullptr;
         }
         if (!wasm_handle->wasm()->configure(plugin_context, plugin)) {
           std::cerr << "Failed to configure thread-local Wasm plugin during recover"
                     << "\n";
-          base_handle->wasm()->fail(FailState::RecoverError,
-                                    "Failed to configure thread-local Wasm plugin during recover");
+          failThreadLocalWasm(wasm_handle, FailState::RecoverError,
+                              "Failed to configure thread-local Wasm plugin during recover");
           return nullptr;
         }
         auto new_handle = plugin_factory(wasm_handle, plugin);
         cacheLocalPlugin(key, new_handle);
+        new_handle->setPluginHandleKey(key);
         setPluginFailCallback(key, wasm_handle);
         setPluginRecoverCallback(key, new_handle, base_handle, plugin, plugin_factory);
         integration->trace("Plugin handle has been recovered");
@@ -806,7 +852,7 @@ void setPluginRecoverCallback(const std::string &key,
       });
 }
 
-std::shared_ptr<PluginHandleBase> getOrCreateThreadLocalPlugin(
+ThreadLocalPluginResult getOrCreateThreadLocalPluginWithResult(
     const std::shared_ptr<WasmHandleBase> &base_handle, const std::shared_ptr<PluginBase> &plugin,
     const WasmHandleCloneFactory &clone_factory, const PluginHandleFactory &plugin_factory) {
   std::string key(std::string(base_handle->wasm()->vm_key()) + "||" + plugin->key());
@@ -815,33 +861,49 @@ std::shared_ptr<PluginHandleBase> getOrCreateThreadLocalPlugin(
   if (it != local_plugins.end()) {
     auto plugin_handle = it->second.lock();
     if (plugin_handle) {
-      return plugin_handle;
+      return {plugin_handle, FailState::Ok};
     }
     local_plugins.erase(it);
   }
   removeStaleLocalCacheEntries(local_plugins, local_plugins_keys);
   // Get thread-local WasmVM.
-  auto wasm_handle = getOrCreateThreadLocalWasm(base_handle, clone_factory);
-  if (!wasm_handle) {
-    return nullptr;
+  auto wasm_result = getOrCreateThreadLocalWasmWithResult(base_handle, clone_factory);
+  if (!wasm_result.handle) {
+    return {nullptr, wasm_result.fail_state};
   }
+  auto wasm_handle = std::move(wasm_result.handle);
   // Create and initialize new thread-local Plugin.
   auto *plugin_context = wasm_handle->wasm()->start(plugin);
-  if (plugin_context == nullptr) {
-    base_handle->wasm()->fail(FailState::StartFailed, "Failed to start thread-local Wasm");
-    return nullptr;
+  auto failure = failStateOr(wasm_handle, FailState::Ok);
+  if (plugin_context == nullptr || failure != FailState::Ok) {
+    if (failure == FailState::Ok) {
+      failure = FailState::StartFailed;
+      failThreadLocalWasm(wasm_handle, failure, "Failed to start thread-local Wasm");
+    }
+    return {nullptr, failure};
   }
-  if (!wasm_handle->wasm()->configure(plugin_context, plugin)) {
-    base_handle->wasm()->fail(FailState::ConfigureFailed,
-                              "Failed to configure thread-local Wasm plugin");
-    return nullptr;
+  const bool configured = wasm_handle->wasm()->configure(plugin_context, plugin);
+  failure = failStateOr(wasm_handle, FailState::Ok);
+  if (!configured || failure != FailState::Ok) {
+    if (failure == FailState::Ok) {
+      failure = FailState::ConfigureFailed;
+      failThreadLocalWasm(wasm_handle, failure, "Failed to configure thread-local Wasm plugin");
+    }
+    return {nullptr, failure};
   }
   auto plugin_handle = plugin_factory(wasm_handle, plugin);
   cacheLocalPlugin(key, plugin_handle);
   plugin_handle->setPluginHandleKey(key);
   setPluginFailCallback(key, wasm_handle);
   setPluginRecoverCallback(key, plugin_handle, base_handle, plugin, plugin_factory);
-  return plugin_handle;
+  return {plugin_handle, FailState::Ok};
+}
+
+std::shared_ptr<PluginHandleBase> getOrCreateThreadLocalPlugin(
+    const std::shared_ptr<WasmHandleBase> &base_handle, const std::shared_ptr<PluginBase> &plugin,
+    const WasmHandleCloneFactory &clone_factory, const PluginHandleFactory &plugin_factory) {
+  return getOrCreateThreadLocalPluginWithResult(base_handle, plugin, clone_factory, plugin_factory)
+      .handle;
 }
 
 void clearWasmCachesForTesting() {

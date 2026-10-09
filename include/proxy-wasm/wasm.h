@@ -22,6 +22,8 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -35,6 +37,7 @@ namespace proxy_wasm {
 
 class ContextBase;
 class WasmHandleBase;
+class PluginHandleBase;
 
 using WasmVmFactory = std::function<std::unique_ptr<WasmVm>()>;
 using CallOnThreadFunction = std::function<void(std::function<void()>)>;
@@ -82,6 +85,8 @@ public:
     contexts_.clear();
   }
   uint32_t allocContextId();
+  // A clone remains distinguishable from a shared base even after its base handle expires.
+  bool isThreadLocal() const { return started_from_.has_value(); }
   bool isFailed() { return failed_ != FailState::Ok; }
   FailState fail_state() { return failed_; }
 
@@ -352,13 +357,29 @@ using WasmHandleCloneFactory =
 // Handle which enables shutdown operations to run post deletion (e.g. post listener drain).
 class WasmHandleBase : public std::enable_shared_from_this<WasmHandleBase> {
 public:
-  explicit WasmHandleBase(std::shared_ptr<WasmBase> wasm_base) : wasm_base_(wasm_base) {}
+  // Worker handles must be constructed and accessed on their owning thread; bases may be shared.
+  explicit WasmHandleBase(std::shared_ptr<WasmBase> wasm_base)
+      : owner_thread_(std::this_thread::get_id()), wasm_base_(wasm_base) {}
   ~WasmHandleBase() {
     if (wasm_base_) {
       wasm_base_->startShutdown();
     }
   }
 
+  // Reject shared bases, killed handles, and worker handles owned by another thread.
+  bool isThreadLocalOnCurrentThread() const {
+    return owner_thread_ == std::this_thread::get_id() && wasm_base_ && wasm_base_->isThreadLocal();
+  }
+
+  // Find the surviving owner for a full VM/plugin key on this healthy VM. Prune expired entries.
+  std::shared_ptr<PluginHandleBase> getPlugin(std::string_view key);
+  // Publish a weak owner using the caller's full key, which is known before callback-key setup.
+  void cachePlugin(const std::string &key, const std::shared_ptr<PluginHandleBase> &handle);
+  // Observe metadata size without retaining plugin owners, for configuration-churn tests.
+  size_t pluginIndexSizeForTesting() const { return plugins_.size(); }
+
+  // Validate this plugin on a disposable clone, or reuse a remembered success on this base.
+  // Failed keys stay retryable; bounded bookkeeping does not guarantee single-flight execution.
   bool canary(const std::shared_ptr<PluginBase> &plugin,
               const WasmHandleCloneFactory &clone_factory);
 
@@ -384,9 +405,18 @@ public:
   }
 
 protected:
+  // Drop expired plugin keys on access/publication; this index never owns a plugin or its VM.
+  void prunePluginIndex();
+  const std::thread::id owner_thread_;
+  // Only the worker thread that publishes thread-local plugins accesses this weak index.
+  std::unordered_map<std::string, std::weak_ptr<PluginHandleBase>> plugins_;
   std::shared_ptr<WasmBase> wasm_base_;
   std::function<std::shared_ptr<WasmHandleBase>()> recover_vm_callback_;
-  std::unordered_map<std::string, bool> plugin_canary_cache_;
+  // Share successful validation results across users of this base, with synchronized bookkeeping.
+  std::mutex canary_mutex_;
+  std::unordered_set<std::string> succeeded_canary_keys_;
+  // Approximate retained key bytes plus per-entry overhead; not a bound on allocator RSS.
+  size_t succeeded_canary_keys_bytes_ = 0;
 };
 
 std::string makeVmKey(std::string_view vm_id, std::string_view configuration,
@@ -400,6 +430,11 @@ std::shared_ptr<WasmHandleBase> createWasm(const std::string &vm_key, const std:
                                            bool allow_precompiled);
 // Get an existing ThreadLocal VM matching 'vm_key' or nullptr if there isn't one.
 std::shared_ptr<WasmHandleBase> getThreadLocalWasm(std::string_view vm_key);
+
+// Restore a missing weak registration from an initialized, healthy worker on the calling thread.
+// An existing live registration wins. Never clones, invokes the guest, or reinstalls callbacks.
+std::shared_ptr<WasmHandleBase>
+registerThreadLocalWasmIfAbsent(const std::shared_ptr<WasmHandleBase> &candidate);
 
 class PluginHandleBase : public std::enable_shared_from_this<PluginHandleBase> {
 public:
@@ -465,6 +500,13 @@ struct ThreadLocalPluginResult {
   std::shared_ptr<PluginHandleBase> handle;
   FailState fail_state{FailState::Ok};
 };
+
+// Obtain the unique plugin owner on an existing healthy worker VM, without a clone factory.
+// Base and target must have the same VM key; target must belong to the calling thread.
+// Failure preserves the actual VM failure state and never poisons a healthy base or older VM.
+ThreadLocalPluginResult getOrCreateThreadLocalPluginForWasmWithResult(
+    const std::shared_ptr<WasmHandleBase> &base_handle, const std::shared_ptr<PluginBase> &plugin,
+    const std::shared_ptr<WasmHandleBase> &target, const PluginHandleFactory &plugin_factory);
 
 ThreadLocalPluginResult getOrCreateThreadLocalPluginWithResult(
     const std::shared_ptr<WasmHandleBase> &base_handle, const std::shared_ptr<PluginBase> &plugin,

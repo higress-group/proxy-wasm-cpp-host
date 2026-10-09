@@ -14,6 +14,8 @@
 
 #include "include/proxy-wasm/wasm.h"
 
+#include <condition_variable>
+#include <thread>
 #include <unordered_set>
 
 #include "gtest/gtest.h"
@@ -47,6 +49,9 @@ struct ControlledFailureState {
   bool trap_start = false;
   bool trap_configure = false;
   CloneResult clone_result = CloneResult::Normal;
+  size_t starts = 0;
+  size_t configures = 0;
+  size_t shutdowns = 0;
 };
 
 class FailingLinkVm : public WasmVm {
@@ -102,7 +107,9 @@ public:
                     std::shared_ptr<ControlledFailureState> state)
       : TestContext(wasm, plugin), state_(std::move(state)) {}
 
+  // Count start calls while preserving the real guest callback unless failure is injected.
   bool onStart(std::shared_ptr<PluginBase> plugin) override {
+    ++state_->starts;
     if (state_->trap_start) {
       wasm()->wasm_vm()->fail(FailState::RuntimeError, "injected start trap");
       return false;
@@ -110,12 +117,20 @@ public:
     return !state_->fail_start && TestContext::onStart(std::move(plugin));
   }
 
+  // Count configure calls; injected traps retain the VM's actual runtime failure category.
   bool onConfigure(std::shared_ptr<PluginBase> plugin) override {
+    ++state_->configures;
     if (state_->trap_configure) {
       wasm()->wasm_vm()->fail(FailState::RuntimeError, "injected configure trap");
       return false;
     }
     return !state_->fail_configure && TestContext::onConfigure(std::move(plugin));
+  }
+
+  // Observe actual root shutdown to detect duplicate handles that prematurely shut down a root.
+  bool onDone() override {
+    ++state_->shutdowns;
+    return TestContext::onDone();
   }
 
 private:
@@ -211,6 +226,37 @@ PluginHandleFactory makePluginHandleFactory() {
     return std::make_shared<PluginHandleBase>(wasm_handle, plugin);
   };
 }
+
+class ObservedCanaryHandle : public WasmHandleBase {
+public:
+  using WasmHandleBase::WasmHandleBase;
+
+  // Read synchronized bookkeeping after validation without exposing new production APIs.
+  std::pair<size_t, size_t> canaryBookkeeping() {
+    std::lock_guard<std::mutex> guard(canary_mutex_);
+    return {succeeded_canary_keys_.size(), succeeded_canary_keys_bytes_};
+  }
+
+  // Seed prior successful 64-byte key fixtures near capacity. Boundary validations still execute
+  // real guest code; avoiding thousands of disposable VMs keeps this a bounded unit test.
+  void addSucceededKeyFixtures(size_t count) {
+    std::lock_guard<std::mutex> guard(canary_mutex_);
+    for (size_t i = 0; i < count; ++i) {
+      auto key = std::to_string(i);
+      key.resize(64, 'x'); // Distinct from the hexadecimal hashes of actual plugin keys.
+      ASSERT_TRUE(succeeded_canary_keys_.insert(key).second);
+      succeeded_canary_keys_bytes_ += key.size() + 64;
+    }
+  }
+};
+
+// Shared-base diagnostics must not introduce a test-only race during concurrent validation.
+class SilentCanaryIntegration : public TestIntegration {
+public:
+  WasmVmIntegration *clone() override { return new SilentCanaryIntegration{}; }
+  void trace(std::string_view /*message*/) override {}
+  void error(std::string_view /*message*/) override {}
+};
 
 } // namespace
 
@@ -804,7 +850,537 @@ TEST_P(TestVm, RecoverCrashedThreadLocalWasm) {
   ASSERT_EQ(new_another_handle3, another_handle3);
 }
 
-// Tests the canary is always applied when making a call `createWasm`
+// An explicit target bypasses stale legacy hits and configures the complete plugin once.
+TEST_P(TestVm, TargetGenerationReusesOwnerWithCompleteConfiguration) {
+  clearWasmCachesForTesting();
+  const auto state = std::make_shared<ControlledFailureState>();
+  const auto new_vm = [this]() { return makeVm(engine_); };
+  size_t clones = 0;
+  const auto original_clone = makeControlledCloneFactory(new_vm, state);
+  const WasmHandleCloneFactory clone = [&](const std::shared_ptr<WasmHandleBase> &base) {
+    ++clones;
+    return original_clone(base);
+  };
+  const auto factory = makePluginHandleFactory();
+  const auto k0 = std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K0", false, "key");
+  const auto k1 = std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K1", false, "key");
+  const auto base =
+      createWasm("generation-configuration", readTestWasmFile("abi_export.wasm"), k0,
+                 makeControlledWasmFactory(new_vm, state, "vm", "config"), clone, false);
+  ASSERT_TRUE(base);
+  auto p0 = getOrCreateThreadLocalPlugin(base, k0, clone, factory);
+  auto p1 = getOrCreateThreadLocalPlugin(base, k1, clone, factory);
+  ASSERT_TRUE(p0 && p1);
+  const auto w0 = p0->wasmHandle();
+  ASSERT_EQ(w0, p1->wasmHandle());
+  w0->wasm()->setShouldRebuild(true);
+  std::shared_ptr<PluginHandleBase> p0_new;
+  ASSERT_TRUE(p0->rebuild(p0_new));
+  ASSERT_TRUE(p0_new);
+  const auto w1 = p0_new->wasmHandle();
+  ASSERT_NE(w0, w1);
+  w0->wasm()->setShouldRebuild(false);
+  EXPECT_EQ(getOrCreateThreadLocalPlugin(base, k1, clone, factory), p1);
+  const auto before_clones = clones;
+  const auto target = getOrCreateThreadLocalPluginForWasmWithResult(base, k1, w1, factory);
+  ASSERT_TRUE(target.handle);
+  EXPECT_EQ(target.handle->wasmHandle(), w1);
+  EXPECT_EQ(target.handle->plugin(), k1);
+  EXPECT_NE(target.handle, p1);
+  const auto before_starts = state->starts;
+  const auto before_configures = state->configures;
+  for (size_t i = 0; i < 5; ++i) {
+    EXPECT_EQ(getOrCreateThreadLocalPluginForWasmWithResult(base, k1, w1, factory).handle,
+              target.handle);
+  }
+  EXPECT_EQ(clones, before_clones);
+  EXPECT_EQ(state->starts, before_starts);
+  EXPECT_EQ(state->configures, before_configures);
+  const auto k2 = std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K2", false, "key");
+  const auto first = getOrCreateThreadLocalPlugin(base, k2, clone, factory);
+  ASSERT_TRUE(first);
+  EXPECT_EQ(first->wasmHandle(), w1);
+  EXPECT_EQ(first->plugin(), k2);
+  clearWasmCachesForTesting();
+}
+
+// A restored VM must reuse its request-only owner after the latest slot was overwritten.
+TEST_P(TestVm, RestoredGenerationReusesRequestOnlyPluginOwner) {
+  clearWasmCachesForTesting();
+  const auto state = std::make_shared<ControlledFailureState>();
+  const auto new_vm = [this]() { return makeVm(engine_); };
+  const auto clone = makeControlledCloneFactory(new_vm, state);
+  const auto factory = makePluginHandleFactory();
+  const auto k0 = std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K0", false, "key");
+  const auto k1 = std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K1", false, "key");
+  const auto base =
+      createWasm("request-only-index", readTestWasmFile("abi_export.wasm"), k0,
+                 makeControlledWasmFactory(new_vm, state, "vm", "config"), clone, false);
+  auto request_owner = getOrCreateThreadLocalPlugin(base, k0, clone, factory);
+  auto survivor = getOrCreateThreadLocalPlugin(base, k1, clone, factory);
+  ASSERT_TRUE(request_owner && survivor);
+  auto *const original_owner = request_owner.get();
+  auto *const original_root = request_owner->wasm()->getRootContext(k0, false);
+  ASSERT_NE(original_root, nullptr);
+  std::weak_ptr<PluginHandleBase> old_owner = request_owner;
+  std::weak_ptr<WasmHandleBase> old_vm = request_owner->wasmHandle();
+  request_owner->wasm()->setShouldRebuild(true);
+  std::shared_ptr<PluginHandleBase> initiator;
+  ASSERT_TRUE(request_owner->rebuild(initiator));
+  ASSERT_TRUE(initiator);
+  std::weak_ptr<WasmHandleBase> w1 = initiator->wasmHandle();
+  initiator.reset();
+  ASSERT_TRUE(w1.expired());
+  EXPECT_EQ(getThreadLocalWasm("request-only-index"), nullptr);
+  survivor->wasm()->setShouldRebuild(false);
+  const auto starts = state->starts;
+  const auto configures = state->configures;
+  ASSERT_EQ(registerThreadLocalWasmIfAbsent(survivor->wasmHandle()), survivor->wasmHandle());
+  auto restored = getOrCreateThreadLocalPlugin(base, k0, clone, factory);
+  ASSERT_TRUE(restored);
+  EXPECT_EQ(restored.get(), original_owner);
+  EXPECT_EQ(restored->wasm()->getRootContext(k0, false), original_root);
+  EXPECT_EQ(state->starts, starts);
+  EXPECT_EQ(state->configures, configures);
+  const auto shutdowns = state->shutdowns;
+  request_owner.reset();
+  EXPECT_EQ(state->shutdowns, shutdowns);
+  EXPECT_EQ(restored->wasm()->getRootContext(k0, false), original_root);
+  restored.reset();
+  EXPECT_TRUE(old_owner.expired());
+  EXPECT_EQ(survivor->wasm()->getRootContext(k0, false), nullptr);
+  survivor.reset();
+  EXPECT_TRUE(old_vm.expired());
+  EXPECT_EQ(getThreadLocalWasm("request-only-index"), nullptr);
+  clearWasmCachesForTesting();
+}
+
+// Recovery honors the supplied VM and preserves its existing root owner.
+TEST_P(TestVm, RecoveryCallbackRespectsTargetAndRequestOnlyOwner) {
+  clearWasmCachesForTesting();
+  const auto state = std::make_shared<ControlledFailureState>();
+  const auto new_vm = [this]() { return makeVm(engine_); };
+  const auto clone = makeControlledCloneFactory(new_vm, state);
+  const auto factory = makePluginHandleFactory();
+  const auto plugin =
+      std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K0", false, "key");
+  const auto base =
+      createWasm("recovery-target-index", readTestWasmFile("abi_export.wasm"), plugin,
+                 makeControlledWasmFactory(new_vm, state, "vm", "config"), clone, false);
+  auto request_owner = getOrCreateThreadLocalPlugin(base, plugin, clone, factory);
+  ASSERT_TRUE(request_owner);
+  request_owner->wasm()->setShouldRebuild(true);
+  std::shared_ptr<PluginHandleBase> newer;
+  ASSERT_TRUE(request_owner->rebuild(newer));
+  ASSERT_TRUE(newer);
+  request_owner->wasm()->setShouldRebuild(false);
+  std::weak_ptr<WasmHandleBase> original_vm = request_owner->wasmHandle();
+  newer->wasmHandle()->setRecoverVmCallback([original_vm]() { return original_vm.lock(); });
+  const auto starts = state->starts;
+  const auto configures = state->configures;
+  std::shared_ptr<PluginHandleBase> restored;
+  ASSERT_TRUE(newer->rebuild(restored));
+  EXPECT_EQ(restored, request_owner);
+  EXPECT_EQ(state->starts, starts);
+  EXPECT_EQ(state->configures, configures);
+  clearWasmCachesForTesting();
+}
+
+// Registration prefers current, rejects invalid workers, and never retains a VM strongly.
+TEST_P(TestVm, MissingGenerationRegistrationHonorsWorkerOwnership) {
+  clearWasmCachesForTesting();
+  const auto state = std::make_shared<ControlledFailureState>();
+  const auto new_vm = [this]() { return makeVm(engine_); };
+  const auto clone = makeControlledCloneFactory(new_vm, state);
+  const auto factory = makePluginHandleFactory();
+  const auto plugin =
+      std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K0", false, "key");
+  const auto base =
+      createWasm("registration-owner", readTestWasmFile("abi_export.wasm"), plugin,
+                 makeControlledWasmFactory(new_vm, state, "vm", "config"), clone, false);
+  auto original = getOrCreateThreadLocalPlugin(base, plugin, clone, factory);
+  ASSERT_TRUE(original);
+  original->wasm()->setShouldRebuild(true);
+  std::shared_ptr<PluginHandleBase> newer;
+  ASSERT_TRUE(original->rebuild(newer));
+  ASSERT_TRUE(newer);
+  EXPECT_EQ(registerThreadLocalWasmIfAbsent(original->wasmHandle()), newer->wasmHandle());
+  EXPECT_EQ(registerThreadLocalWasmIfAbsent(base), nullptr);
+  EXPECT_EQ(registerThreadLocalWasmIfAbsent(nullptr), nullptr);
+  const auto uninitialized = clone(base);
+  EXPECT_EQ(registerThreadLocalWasmIfAbsent(uninitialized), nullptr);
+  const auto invalid = std::make_shared<WasmHandleBase>(nullptr);
+  EXPECT_EQ(registerThreadLocalWasmIfAbsent(invalid), nullptr);
+  std::thread foreign([&]() {
+    EXPECT_EQ(registerThreadLocalWasmIfAbsent(original->wasmHandle()), nullptr);
+    EXPECT_EQ(
+        getOrCreateThreadLocalPluginForWasmWithResult(base, plugin, original->wasmHandle(), factory)
+            .handle,
+        nullptr);
+  });
+  foreign.join();
+  original->wasm()->wasm_vm()->fail(FailState::RuntimeError, "late W0 failure");
+  EXPECT_EQ(getThreadLocalWasm("registration-owner"), newer->wasmHandle());
+  EXPECT_EQ(registerThreadLocalWasmIfAbsent(original->wasmHandle()), nullptr);
+  std::weak_ptr<WasmHandleBase> newer_vm = newer->wasmHandle();
+  newer.reset();
+  EXPECT_TRUE(newer_vm.expired());
+  EXPECT_EQ(getThreadLocalWasm("registration-owner"), nullptr);
+  EXPECT_EQ(registerThreadLocalWasmIfAbsent(original->wasmHandle()), nullptr);
+  clearWasmCachesForTesting();
+}
+
+// Target-local rejection and traps preserve real failure state without poisoning the base.
+TEST_P(TestVm, TargetGenerationFailureKeepsActualFailStateAndHealthyOldService) {
+  struct FailureCase {
+    bool start;
+    bool configure;
+    bool trap_start;
+    bool trap_configure;
+    FailState expected;
+  };
+  const FailureCase cases[] = {{true, false, false, false, FailState::StartFailed},
+                               {false, true, false, false, FailState::ConfigureFailed},
+                               {false, false, true, false, FailState::RuntimeError},
+                               {false, false, false, true, FailState::RuntimeError}};
+  for (const auto &test_case : cases) {
+    clearWasmCachesForTesting();
+    const auto state = std::make_shared<ControlledFailureState>();
+    const auto new_vm = [this]() { return makeVm(engine_); };
+    const auto clone = makeControlledCloneFactory(new_vm, state);
+    const auto factory = makePluginHandleFactory();
+    const auto plugin =
+        std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K0", false, "key");
+    const auto changed =
+        std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K1", false, "key");
+    const auto base =
+        createWasm("target-failure", readTestWasmFile("abi_export.wasm"), plugin,
+                   makeControlledWasmFactory(new_vm, state, "vm", "config"), clone, false);
+    auto old = getOrCreateThreadLocalPlugin(base, plugin, clone, factory);
+    ASSERT_TRUE(old);
+    old->wasm()->setShouldRebuild(true);
+    std::shared_ptr<WasmHandleBase> target;
+    ASSERT_TRUE(old->wasmHandle()->rebuild(target));
+    ASSERT_TRUE(target);
+    old->wasm()->setShouldRebuild(false);
+    state->fail_start = test_case.start;
+    state->fail_configure = test_case.configure;
+    state->trap_start = test_case.trap_start;
+    state->trap_configure = test_case.trap_configure;
+    const auto result =
+        getOrCreateThreadLocalPluginForWasmWithResult(base, changed, target, factory);
+    EXPECT_EQ(result.handle, nullptr);
+    EXPECT_EQ(result.fail_state, test_case.expected);
+    EXPECT_EQ(target->wasm()->fail_state(), test_case.expected);
+    EXPECT_FALSE(old->wasm()->isFailed());
+    EXPECT_FALSE(base->wasm()->isFailed());
+    EXPECT_EQ(
+        getOrCreateThreadLocalPluginForWasmWithResult(base, changed, target, factory).fail_state,
+        test_case.expected);
+    EXPECT_EQ(getOrCreateThreadLocalPlugin(base, plugin, clone, factory), old);
+  }
+  clearWasmCachesForTesting();
+}
+
+// Invalid targets and factory results cannot publish an owner or redirect guest calls.
+TEST_P(TestVm, TargetGenerationRejectsInvalidInputsBeforeGuestCalls) {
+  clearWasmCachesForTesting();
+  const auto state = std::make_shared<ControlledFailureState>();
+  const auto new_vm = [this]() { return makeVm(engine_); };
+  const auto clone = makeControlledCloneFactory(new_vm, state);
+  const auto factory = makePluginHandleFactory();
+  const auto plugin =
+      std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K0", false, "key");
+  const auto base =
+      createWasm("target-inputs", readTestWasmFile("abi_export.wasm"), plugin,
+                 makeControlledWasmFactory(new_vm, state, "vm", "config"), clone, false);
+  auto owner = getOrCreateThreadLocalPlugin(base, plugin, clone, factory);
+  ASSERT_TRUE(owner);
+  const auto target = owner->wasmHandle();
+  const auto starts = state->starts;
+  EXPECT_EQ(getOrCreateThreadLocalPluginForWasmWithResult(nullptr, plugin, target, factory).handle,
+            nullptr);
+  EXPECT_EQ(getOrCreateThreadLocalPluginForWasmWithResult(base, nullptr, target, factory).handle,
+            nullptr);
+  EXPECT_EQ(getOrCreateThreadLocalPluginForWasmWithResult(base, plugin, nullptr, factory).handle,
+            nullptr);
+  EXPECT_EQ(getOrCreateThreadLocalPluginForWasmWithResult(base, plugin, base, factory).handle,
+            nullptr);
+  EXPECT_EQ(getOrCreateThreadLocalPluginForWasmWithResult(base, plugin, target, {}).handle,
+            nullptr);
+  const auto uninitialized = clone(base);
+  EXPECT_EQ(
+      getOrCreateThreadLocalPluginForWasmWithResult(base, plugin, uninitialized, factory).handle,
+      nullptr);
+  EXPECT_EQ(state->starts, starts);
+  const auto other_base =
+      createWasm("different-target-key", readTestWasmFile("abi_export.wasm"), plugin,
+                 makeControlledWasmFactory(new_vm, state, "vm", "config"), clone, false);
+  ASSERT_TRUE(other_base);
+  auto other_target = clone(other_base);
+  ASSERT_TRUE(other_target->wasm()->initialize());
+  const auto calls_before_mismatch = state->starts;
+  EXPECT_EQ(
+      getOrCreateThreadLocalPluginForWasmWithResult(base, plugin, other_target, factory).handle,
+      nullptr);
+  EXPECT_EQ(state->starts, calls_before_mismatch);
+  const auto changed =
+      std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K1", false, "key");
+  const PluginHandleFactory no_handle = [](const std::shared_ptr<WasmHandleBase> &,
+                                           const std::shared_ptr<PluginBase> &) {
+    return std::shared_ptr<PluginHandleBase>{};
+  };
+  EXPECT_EQ(getOrCreateThreadLocalPluginForWasmWithResult(base, changed, target, no_handle).handle,
+            nullptr);
+  const PluginHandleFactory wrong_plugin = [&owner](const std::shared_ptr<WasmHandleBase> &,
+                                                    const std::shared_ptr<PluginBase> &) {
+    return owner;
+  };
+  EXPECT_EQ(
+      getOrCreateThreadLocalPluginForWasmWithResult(base, changed, target, wrong_plugin).handle,
+      nullptr);
+  EXPECT_FALSE(target->wasm()->isFailed());
+  EXPECT_EQ(getOrCreateThreadLocalPlugin(base, plugin, clone, factory), owner);
+  base->wasm()->wasm_vm()->fail(FailState::RuntimeError, "real base failure");
+  EXPECT_EQ(
+      getOrCreateThreadLocalPluginForWasmWithResult(base, changed, target, factory).fail_state,
+      FailState::RuntimeError);
+  EXPECT_FALSE(target->wasm()->isFailed());
+  clearWasmCachesForTesting();
+}
+
+// Expired metadata is pruned on access while remaining plugin and VM owners stay weak.
+TEST_P(TestVm, GenerationPluginWeakIndexCleansConfigurationChurn) {
+  clearWasmCachesForTesting();
+  const auto state = std::make_shared<ControlledFailureState>();
+  const auto new_vm = [this]() { return makeVm(engine_); };
+  const auto clone = makeControlledCloneFactory(new_vm, state);
+  const auto factory = makePluginHandleFactory();
+  const auto initial =
+      std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "initial", false, "key");
+  const auto base =
+      createWasm("weak-index-churn", readTestWasmFile("abi_export.wasm"), initial,
+                 makeControlledWasmFactory(new_vm, state, "vm", "config"), clone, false);
+  auto owner = getOrCreateThreadLocalPlugin(base, initial, clone, factory);
+  ASSERT_TRUE(owner);
+  auto target = owner->wasmHandle();
+  for (size_t i = 0; i < 100; ++i) {
+    const auto plugin = std::make_shared<PluginBase>("plugin", "root", "vm", engine_,
+                                                     std::to_string(i), false, "key");
+    auto created =
+        getOrCreateThreadLocalPluginForWasmWithResult(base, plugin, target, factory).handle;
+    ASSERT_TRUE(created);
+    std::weak_ptr<PluginHandleBase> weak = created;
+    created.reset();
+    EXPECT_TRUE(weak.expired());
+    EXPECT_EQ(target->getPlugin("weak-index-churn||" + plugin->key()), nullptr);
+    EXPECT_EQ(target->pluginIndexSizeForTesting(), 1);
+  }
+  EXPECT_TRUE(staleLocalPluginsKeysForTesting().size() <= 1);
+  std::weak_ptr<WasmHandleBase> weak_vm = target;
+  owner.reset();
+  target.reset();
+  EXPECT_TRUE(weak_vm.expired());
+  clearWasmCachesForTesting();
+}
+
+// Cache only successful complete keys on this base; a distinct configuration or base validates
+// again.
+TEST_P(TestVm, CanaryRecordsSuccessPerBaseAndCompletePluginKey) {
+  const auto state = std::make_shared<ControlledFailureState>();
+  const auto new_vm = [this]() { return makeVm(engine_); };
+  size_t clones = 0;
+  const auto original_clone = makeControlledCloneFactory(new_vm, state);
+  const WasmHandleCloneFactory clone = [&](const std::shared_ptr<WasmHandleBase> &base) {
+    ++clones;
+    return original_clone(base);
+  };
+  const auto plugin =
+      std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K0", false, "host");
+  auto wasm = std::make_shared<ControlledWasm>(new_vm(), "vm", "config", "canary-success", state);
+  ASSERT_TRUE(wasm->load(readTestWasmFile("abi_export.wasm")));
+  ASSERT_TRUE(wasm->initialize());
+  const auto base = std::make_shared<ObservedCanaryHandle>(wasm);
+  ASSERT_TRUE(base->canary(plugin, clone));
+  EXPECT_EQ(clones, 1);
+  const auto starts = state->starts;
+  const auto configures = state->configures;
+  EXPECT_TRUE(base->canary(plugin, clone));
+  EXPECT_EQ(clones, 1);
+  EXPECT_EQ(state->starts, starts);
+  EXPECT_EQ(state->configures, configures);
+  const auto changed =
+      std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K1", false, "host");
+  ASSERT_NE(plugin->key(), changed->key());
+  EXPECT_TRUE(base->canary(changed, clone));
+  EXPECT_TRUE(base->canary(changed, clone));
+  EXPECT_EQ(clones, 2);
+  EXPECT_EQ(base->canaryBookkeeping().first, 2);
+
+  auto other_wasm =
+      std::make_shared<ControlledWasm>(new_vm(), "vm", "config", "canary-other-base", state);
+  ASSERT_TRUE(other_wasm->load(readTestWasmFile("abi_export.wasm")));
+  ASSERT_TRUE(other_wasm->initialize());
+  const auto other_base = std::make_shared<ObservedCanaryHandle>(other_wasm);
+  EXPECT_TRUE(other_base->canary(plugin, clone));
+  EXPECT_EQ(clones, 3);
+  EXPECT_EQ(other_base->canaryBookkeeping().first, 1);
+}
+
+// Start/configure/initialize failures do not become cached rejections; retry invokes validation.
+TEST_P(TestVm, CanaryFailuresRemainRetryableAndDoNotPoisonBase) {
+  for (size_t failure = 0; failure < 3; ++failure) {
+    const auto state = std::make_shared<ControlledFailureState>();
+    const auto new_vm = [this]() { return makeVm(engine_); };
+    size_t clones = 0;
+    const auto original_clone = makeControlledCloneFactory(new_vm, state);
+    const WasmHandleCloneFactory clone = [&](const std::shared_ptr<WasmHandleBase> &base) {
+      ++clones;
+      return original_clone(base);
+    };
+    const auto plugin =
+        std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K0", false, "host");
+    auto wasm = std::make_shared<ControlledWasm>(new_vm(), "vm", "config", "canary-retry", state);
+    ASSERT_TRUE(wasm->load(readTestWasmFile("abi_export.wasm")));
+    ASSERT_TRUE(wasm->initialize());
+    const auto base = std::make_shared<ObservedCanaryHandle>(wasm);
+    state->fail_start = failure == 0;
+    state->fail_configure = failure == 1;
+    state->clone_result =
+        failure == 2 ? CloneResult::InitializeFailureWithoutState : CloneResult::Normal;
+    EXPECT_FALSE(base->canary(plugin, clone));
+    EXPECT_FALSE(base->canary(plugin, clone));
+    EXPECT_EQ(clones, 2);
+    EXPECT_EQ(base->canaryBookkeeping().first, 0);
+    EXPECT_EQ(base->canaryBookkeeping().second, 0);
+    EXPECT_FALSE(base->wasm()->isFailed());
+    state->fail_start = false;
+    state->fail_configure = false;
+    state->clone_result = CloneResult::Normal;
+    EXPECT_TRUE(base->canary(plugin, clone));
+    EXPECT_EQ(clones, 3);
+    EXPECT_TRUE(base->canary(plugin, clone));
+    EXPECT_EQ(clones, 3);
+  }
+}
+
+// Charge actual key length plus overhead: accept an exactly fitting entry, retry keys over the cap,
+// and preserve existing skips after the budget fills. The budget is bookkeeping, not exact RSS.
+TEST_P(TestVm, CanaryKeyByteBudgetPreservesValidationAtCapacity) {
+  const size_t cap = 10 * 1024 * 1024;
+  const size_t overhead = 64;
+  const auto state = std::make_shared<ControlledFailureState>();
+  const auto new_vm = [this]() { return makeVm(engine_); };
+  size_t clones = 0;
+  const auto original_clone = makeControlledCloneFactory(new_vm, state);
+  const WasmHandleCloneFactory clone = [&](const std::shared_ptr<WasmHandleBase> &base) {
+    ++clones;
+    return original_clone(base);
+  };
+  auto wasm = std::make_shared<ControlledWasm>(new_vm(), "vm", "config", "canary-budget", state);
+  ASSERT_TRUE(wasm->load(readTestWasmFile("abi_export.wasm")));
+  ASSERT_TRUE(wasm->initialize());
+  const auto base = std::make_shared<ObservedCanaryHandle>(wasm);
+  const auto initial =
+      std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K0", false, "host");
+  ASSERT_EQ(initial->key().size(), 64);
+  const size_t entry_cost = initial->key().size() + overhead;
+  ASSERT_EQ(cap % entry_cost, 0);
+  ASSERT_TRUE(base->canary(initial, clone));
+  EXPECT_EQ(base->canaryBookkeeping().second, entry_cost);
+  base->addSucceededKeyFixtures(cap / entry_cost - 2);
+  ASSERT_EQ(base->canaryBookkeeping().second, cap - entry_cost);
+  const auto exact =
+      std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K1", false, "host");
+  EXPECT_TRUE(base->canary(exact, clone));
+  EXPECT_EQ(base->canaryBookkeeping().first, cap / entry_cost);
+  EXPECT_EQ(base->canaryBookkeeping().second, cap);
+  EXPECT_TRUE(base->canary(exact, clone));
+  EXPECT_EQ(clones, 2);
+  const auto excluded =
+      std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K2", false, "host");
+  EXPECT_TRUE(base->canary(excluded, clone));
+  EXPECT_TRUE(base->canary(excluded, clone));
+  EXPECT_EQ(clones, 4);
+  EXPECT_TRUE(base->canary(initial, clone));
+  EXPECT_EQ(clones, 4);
+  EXPECT_EQ(base->canaryBookkeeping().first, cap / entry_cost);
+  EXPECT_EQ(base->canaryBookkeeping().second, cap);
+}
+
+// Force concurrent misses before any insertion. All validations succeed, but the shared key is
+// inserted/charged once; later reuse skips. No single-flight guarantee is implied.
+TEST_P(TestVm, CanaryConcurrentMissesRecordAndChargeOneSuccess) {
+  auto vm = makeVm(engine_);
+  vm->integration() = std::make_unique<SilentCanaryIntegration>();
+  auto wasm =
+      std::make_shared<TestWasm>(std::move(vm), std::unordered_map<std::string, std::string>{},
+                                 "vm", "config", "canary-concurrent");
+  ASSERT_TRUE(wasm->load(readTestWasmFile("abi_export.wasm")));
+  ASSERT_TRUE(wasm->initialize());
+  const auto base = std::make_shared<ObservedCanaryHandle>(wasm);
+  const auto plugin =
+      std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K0", false, "host");
+  const size_t thread_count = 8;
+  std::mutex barrier_mutex;
+  std::condition_variable barrier_cv;
+  size_t arrivals = 0;
+  std::atomic<size_t> clones{0};
+  std::atomic<size_t> successes{0};
+  const WasmHandleCloneFactory clone = [&](const std::shared_ptr<WasmHandleBase> &handle) {
+    {
+      std::unique_lock<std::mutex> lock(barrier_mutex);
+      ++arrivals;
+      barrier_cv.notify_all();
+      barrier_cv.wait(lock, [&]() { return arrivals == thread_count; });
+    }
+    ++clones;
+    auto local = std::make_shared<TestWasm>(handle, [this]() { return makeVm(engine_); });
+    return std::make_shared<WasmHandleBase>(local);
+  };
+  std::vector<std::thread> threads;
+  for (size_t i = 0; i < thread_count; ++i) {
+    threads.emplace_back([&]() {
+      if (base->canary(plugin, clone)) {
+        ++successes;
+      }
+    });
+  }
+  for (auto &thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(successes.load(), thread_count);
+  EXPECT_EQ(clones.load(), thread_count);
+  EXPECT_EQ(base->canaryBookkeeping().first, 1);
+  EXPECT_EQ(base->canaryBookkeeping().second, plugin->key().size() + 64);
+  EXPECT_TRUE(base->canary(plugin, clone));
+  EXPECT_EQ(clones.load(), thread_count);
+}
+
+// Absent VMs reject before cloning; clone failure keeps its original base failure attribution.
+TEST_P(TestVm, CanaryInvalidVmAndCloneFailureKeepOriginalAttribution) {
+  const auto plugin =
+      std::make_shared<PluginBase>("plugin", "root", "vm", engine_, "K0", false, "host");
+  size_t clones = 0;
+  const WasmHandleCloneFactory clone = [&](const std::shared_ptr<WasmHandleBase> &) {
+    ++clones;
+    return std::shared_ptr<WasmHandleBase>{};
+  };
+  const auto killed = std::make_shared<WasmHandleBase>(nullptr);
+  EXPECT_FALSE(killed->canary(plugin, clone));
+  auto no_vm = std::make_shared<TestWasm>(std::unique_ptr<WasmVm>{});
+  const auto invalid = std::make_shared<WasmHandleBase>(no_vm);
+  EXPECT_FALSE(invalid->canary(plugin, clone));
+  EXPECT_EQ(clones, 0);
+  auto wasm = std::make_shared<TestWasm>(makeVm(engine_));
+  const auto base = std::make_shared<ObservedCanaryHandle>(wasm);
+  EXPECT_FALSE(base->canary(plugin, clone));
+  EXPECT_EQ(clones, 1);
+  EXPECT_EQ(base->wasm()->fail_state(), FailState::UnableToCloneVm);
+  EXPECT_EQ(base->canaryBookkeeping().first, 0);
+}
+
+// Test each distinct plugin configuration when creating or reusing a base.
 TEST_P(TestVm, AlwaysApplyCanary) {
   // Use different root_id, but the others are the same
   const auto *const plugin_name = "plugin_name";
